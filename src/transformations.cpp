@@ -85,21 +85,29 @@ recursive_kron(std::vector<fk::matrix<P, mem_type::view>> &kron_matrices,
   }
 }
 
-/* given a pde, for each dimension create a matrix where the columns are
-   legendre basis functions evaluated at the roots */
 template<typename P>
 std::vector<fk::matrix<P>> gen_realspace_transform(
     PDE<P> const &pde,
     basis::wavelet_transform<P, resource::host> const &transformer)
 {
+  return gen_realspace_transform(pde.get_dimensions(), transformer);
+}
+
+/* given a pde, for each dimension create a matrix where the columns are
+   legendre basis functions evaluated at the roots */
+template<typename P>
+std::vector<fk::matrix<P>> gen_realspace_transform(
+    std::vector<dimension<P>> const &dims,
+    basis::wavelet_transform<P, resource::host> const &transformer)
+{
   /* contains a basis matrix for each dimension */
   std::vector<fk::matrix<P>> real_space_transform;
-  real_space_transform.reserve(pde.num_dims);
+  real_space_transform.reserve(dims.size());
 
-  for (int i = 0; i < pde.num_dims; i++)
+  for (int i = 0; i < dims.size(); i++)
   {
     /* get the ith dimension */
-    dimension<P> const &d    = pde.get_dimensions()[i];
+    dimension<P> const &d    = dims[i];
     int const level          = d.get_level();
     int const n_segments     = fm::two_raised_to(level);
     int const deg_freedom_1d = d.get_degree() * n_segments;
@@ -144,7 +152,7 @@ void wavelet_to_realspace(
   /* generate the wavelet-to-real-space transformation matrices for each
    * dimension */
   std::vector<fk::matrix<P>> real_space_transform =
-      gen_realspace_transform(pde, transformer);
+      gen_realspace_transform(pde.get_dimensions(), transformer);
 
   // FIXME Assume the degree in the first dimension is equal across all the
   // remaining dimensions
@@ -281,6 +289,14 @@ template std::vector<fk::matrix<double>> gen_realspace_transform(
 
 template std::vector<fk::matrix<float>> gen_realspace_transform(
     PDE<float> const &pde,
+    basis::wavelet_transform<float, resource::host> const &transformer);
+
+template std::vector<fk::matrix<double>> gen_realspace_transform(
+    std::vector<dimension<double>> const &pde,
+    basis::wavelet_transform<double, resource::host> const &transformer);
+
+template std::vector<fk::matrix<float>> gen_realspace_transform(
+    std::vector<dimension<float>> const &pde,
     basis::wavelet_transform<float, resource::host> const &transformer);
 
 template void wavelet_to_realspace(

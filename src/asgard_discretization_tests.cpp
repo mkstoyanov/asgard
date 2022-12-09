@@ -48,5 +48,20 @@ int main(int argc, char *argv[])
     std::cout << init[i] << std::endl;
   }
 
+  auto const real_space_size = real_solution_size(dims.list);
+  fk::vector<float> real_space(real_space_size);
+  // temporary workspaces for the transform
+  fk::vector<float, mem_type::owner, resource::host> workspace(real_space_size *
+                                                               2);
+  std::array<fk::vector<float, mem_type::view, resource::host>, 2>
+      tmp_workspace = {
+          fk::vector<float, mem_type::view, resource::host>(workspace, 0,
+                                                            real_space_size),
+          fk::vector<float, mem_type::view, resource::host>(
+              workspace, real_space_size, real_space_size * 2 - 1)};
+  // transform initial condition to realspace
+  wavelet_to_realspace<float>(
+      *pde, initial_condition, adaptive_grid.get_table(), transformer,
+      default_workspace_cpu_MB, tmp_workspace, real_space);
   return 0;
 }

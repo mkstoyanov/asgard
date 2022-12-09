@@ -1,5 +1,6 @@
 #pragma once
 
+#include "asgard_dimension.hpp"
 #include "basis.hpp"
 #include "distribution.hpp"
 #include "elements.hpp"
@@ -24,6 +25,11 @@ recursive_kron(std::vector<fk::matrix<P, mem_type::view>> &kron_matrices,
 template<typename P>
 std::vector<fk::matrix<P>> gen_realspace_transform(
     PDE<P> const &pde,
+    basis::wavelet_transform<P, resource::host> const &transformer);
+
+template<typename P>
+std::vector<fk::matrix<P>> gen_realspace_transform(
+    std::vector<dimension<P>> const &pde,
     basis::wavelet_transform<P, resource::host> const &transformer);
 
 template<typename P>
@@ -245,15 +251,30 @@ inline fk::vector<P> transform_and_combine_dimensions(
 template<typename P>
 inline int real_solution_size(PDE<P> const &pde)
 {
+  return real_solution_size(pde.get_dimensions());
+}
+
+template<typename P>
+inline int real_solution_size(std::vector<dimension<P>> const &dims)
+{
   /* determine the length of the realspace solution */
-  std::vector<dimension<P>> const &dims = pde.get_dimensions();
-  int prod                              = 1;
+  int prod{1};
   for (int i = 0; i < static_cast<int>(dims.size()); i++)
   {
     prod *= (dims[i].get_degree() * std::pow(2, dims[i].get_level()));
   }
-
   return prod;
+}
+
+template<typename precision>
+inline int
+real_solution_size(std::vector<dimension_description<precision>> const &dims)
+{
+  return std::accumulate(
+      dims.cbegin(), dims.cend(), int{1},
+      [](int const size, dimension_description<precision> const &dim) {
+        return size * dim.degree * fm::two_raised_to(dim.level);
+      });
 }
 
 template<typename P>
