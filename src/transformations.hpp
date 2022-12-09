@@ -33,9 +33,32 @@ std::vector<fk::matrix<P>> gen_realspace_transform(
     basis::wavelet_transform<P, resource::host> const &transformer);
 
 template<typename P>
+std::vector<fk::matrix<P>> gen_realspace_transform(
+    std::vector<dimension_description<P>> const &pde,
+    basis::wavelet_transform<P, resource::host> const &transformer);
+
+template<typename P>
 void wavelet_to_realspace(
     PDE<P> const &pde, fk::vector<P> const &wave_space,
     elements::table const &table,
+    basis::wavelet_transform<P, resource::host> const &transformer,
+    int const memory_limit_MB,
+    std::array<fk::vector<P, mem_type::view, resource::host>, 2> &workspace,
+    fk::vector<P> &real_space);
+
+template<typename P>
+void wavelet_to_realspace(
+    std::vector<dimension<P>> const &pde, fk::vector<P> const &wave_space,
+    elements::table const &table,
+    basis::wavelet_transform<P, resource::host> const &transformer,
+    int const memory_limit_MB,
+    std::array<fk::vector<P, mem_type::view, resource::host>, 2> &workspace,
+    fk::vector<P> &real_space);
+
+template<typename P>
+void wavelet_to_realspace(
+    std::vector<dimension_description<P>> const &pde,
+    fk::vector<P> const &wave_space, elements::table const &table,
     basis::wavelet_transform<P, resource::host> const &transformer,
     int const memory_limit_MB,
     std::array<fk::vector<P, mem_type::view, resource::host>, 2> &workspace,

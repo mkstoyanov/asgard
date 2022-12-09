@@ -59,9 +59,13 @@ int main(int argc, char *argv[])
                                                             real_space_size),
           fk::vector<float, mem_type::view, resource::host>(
               workspace, real_space_size, real_space_size * 2 - 1)};
+  // FIXME currently used to check realspace transform only
+  /* RAM on fusiont5 */
+  static auto const default_workspace_cpu_MB = 187000;
+
   // transform initial condition to realspace
-  wavelet_to_realspace<float>(
-      *pde, initial_condition, adaptive_grid.get_table(), transformer,
-      default_workspace_cpu_MB, tmp_workspace, real_space);
+  wavelet_to_realspace<float>(dims.list, init, grid.grid->get_table(),
+                              transformer, default_workspace_cpu_MB,
+                              tmp_workspace, real_space);
   return 0;
 }
