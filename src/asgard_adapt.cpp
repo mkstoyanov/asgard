@@ -67,26 +67,6 @@ remap_for_delete(std::vector<int64_t> const &deleted_indices,
   return new_to_old;
 }
 
-// helper to find new levels for each dimension after adapting table
-static std::vector<int>
-get_levels(elements::table const &adapted_table, int const num_dims)
-{
-  assert(num_dims > 0);
-  auto const flat_table = adapted_table.get_active_table();
-  auto const coord_size = num_dims * 2;
-  std::vector<int> max_levels(num_dims, 0);
-  for (int64_t element = 0; element < adapted_table.size(); ++element)
-  {
-    fk::vector<int, mem_type::const_view> coords(
-        flat_table, element * coord_size, (element + 1) * coord_size - 1);
-    for (auto i = 0; i < num_dims; ++i)
-    {
-      max_levels[i] = std::max(coords(i), max_levels[i]);
-    }
-  }
-  return max_levels;
-}
-
 template<typename P>
 static void update_levels(elements::table const &adapted_table, PDE<P> &pde,
                           bool const rechain = false)
@@ -127,98 +107,6 @@ distributed_grid<P>::distributed_grid(int max_level, prog_opts const &options)
     : table_(max_level, options), max_level_(max_level)
 {
   plan_ = get_plan(get_num_ranks(), table_);
-}
-
-template<typename P>
-fk::vector<P> distributed_grid<P>::get_initial_condition(
-    std::vector<dimension<P>> &dims, P const mult, int const num_terms,
-    std::vector<std::vector<term<P>>> &terms,
-    basis::wavelet_transform<P, resource::host> const &transformer,
-    prog_opts const &options)
-{
-  // get unrefined condition
-
-  // TODO: this needs to be refactored to allow dimensions to have different
-  // number of md_funcs
-  auto const num_md_funcs = dims.back().initial_condition.size();
-  std::vector<std::vector<vector_func<P>>> v_functions;
-  for (auto const &dim : dims)
-  {
-    // every dimension should have the same number of functions defined
-    expect(dim.initial_condition.size() == num_md_funcs);
-  }
-
-  for (size_t i = 0; i < num_md_funcs; i++)
-  {
-    v_functions.push_back(std::vector<vector_func<P>>());
-    for (auto const &dim : dims)
-    {
-      // add the ith function for this dimension
-      v_functions[i].push_back(dim.initial_condition[i]);
-    }
-  }
-
-  P const time             = 0;
-  auto const initial_unref = [this, &v_functions, &dims, &transformer, time,
-                              mult]() {
-    auto const subgrid     = this->get_subgrid(get_rank());
-    auto const vector_size = (subgrid.col_stop - subgrid.col_start + 1) *
-                             fm::ipow(dims[0].get_degree() + 1, dims.size());
-    fk::vector<P> initial(vector_size);
-    for (size_t i = 0; i < v_functions.size(); i++)
-    {
-      // TODO temp add scalar time func to initial conditions with multi-D func
-      // PR
-      auto const combined = transform_and_combine_dimensions(
-          dims, v_functions[i], this->get_table(), transformer,
-          subgrid.col_start, subgrid.col_stop, dims[0].get_degree(), time,
-          mult);
-      initial = initial + combined;
-    }
-    return initial;
-  };
-
-  if (not options.adapt_threshold)
-  {
-    return initial_unref();
-  }
-
-  // refine
-  fk::vector<P> refine_y(initial_unref());
-  auto refining = true;
-  while (refining)
-  {
-    auto const old_y   = fk::vector<P>(refine_y);
-    auto const refined = this->refine(old_y, options);
-    refining           = old_y.size() != refined.size();
-    // update_levels(this->get_table(), pde);
-    update_levels(this->get_table(), dims, num_terms, terms);
-
-    // reproject
-    refine_y = initial_unref();
-  }
-
-  // coarsen
-  auto const coarse_y = this->coarsen(refine_y, options);
-  update_levels(this->get_table(), dims, num_terms, terms);
-
-  return initial_unref();
-}
-
-template<typename P>
-void distributed_grid<P>::get_initial_condition(
-    std::vector<dimension<P>> const &dims,
-    std::vector<vector_func<P>> const &v_functions, P const mult,
-    basis::wavelet_transform<P, resource::host> const &transformer,
-    fk::vector<P, mem_type::view> result)
-{
-  // get unrefined condition
-  P const time       = 0;
-  auto const subgrid = this->get_subgrid(get_rank());
-  // TODO temp add scalar time func to initial conditions with multi-D func PR
-  transform_and_combine_dimensions(
-      dims, v_functions, this->get_table(), transformer, subgrid.col_start,
-      subgrid.col_stop, dims[0].get_degree(), time, mult, result);
 }
 
 template<typename P>

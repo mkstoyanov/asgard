@@ -4,6 +4,26 @@
 
 namespace asgard::adapt
 {
+// helper to find new levels for each dimension after adapting table
+inline std::vector<int>
+get_levels(elements::table const &adapted_table, int const num_dims)
+{
+  assert(num_dims > 0);
+  auto const flat_table = adapted_table.get_active_table();
+  auto const coord_size = num_dims * 2;
+  std::vector<int> max_levels(num_dims, 0);
+  for (int64_t element = 0; element < adapted_table.size(); ++element)
+  {
+    fk::vector<int, mem_type::const_view> coords(
+        flat_table, element * coord_size, (element + 1) * coord_size - 1);
+    for (auto i = 0; i < num_dims; ++i)
+    {
+      max_levels[i] = std::max(coords(i), max_levels[i]);
+    }
+  }
+  return max_levels;
+}
+
 // this class bundles
 // 1) the element table (set of active elements and their coordinates) and
 // 2) the distribution plan that maps ranks to the active elements whose
@@ -39,29 +59,6 @@ public:
   distributed_grid(PDE<P> const &pde)
       : distributed_grid(pde.max_level(), pde.options())
   {}
-
-  // driver routines
-  fk::vector<P> get_initial_condition(
-      PDE<P> &pde,
-      basis::wavelet_transform<P, resource::host> const &transformer)
-  {
-    return this->get_initial_condition(
-        pde.get_dimensions(),
-        pde.has_exact_time() ? pde.exact_time(0.0) : static_cast<P>(1.0),
-        pde.num_terms(), pde.get_terms(), transformer, pde.options());
-  }
-
-  fk::vector<P> get_initial_condition(
-      std::vector<dimension<P>> &dims, P const mult, int const num_terms,
-      std::vector<std::vector<term<P>>> &terms,
-      basis::wavelet_transform<P, resource::host> const &transformer,
-      prog_opts const &cli_opts);
-
-  void get_initial_condition(
-      std::vector<dimension<P>> const &dims,
-      std::vector<vector_func<P>> const &v_functions, P const mult,
-      basis::wavelet_transform<P, resource::host> const &transformer,
-      fk::vector<P, mem_type::view> result);
 
   fk::vector<P> coarsen_solution(PDE<P> &pde, fk::vector<P> const &x);
   fk::vector<P>
