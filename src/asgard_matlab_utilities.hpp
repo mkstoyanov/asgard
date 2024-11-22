@@ -17,54 +17,15 @@ namespace asgard
 //
 //-----------------------------------------------------------------------------
 
-// matlab's "linspace(start, end, N)" function
-//-----------------------------------------------------------------------------
-//
-// c++ implementation of matlab (a subset of) linspace() function
-// initial c++ implementation by Tyler McDaniel
-//
-// -- linspace (START, END)
-// -- linspace (START, END, N)
-//     Return a row vector with N linearly spaced elements between START
-//     and END.
-//
-//     If the number of elements is greater than one, then the endpoints
-//     START and END are always included in the range.  If START is
-//     greater than END, the elements are stored in decreasing order.  If
-//     the number of points is not specified, a value of 100 is used.
-//
-//     The 'linspace' function returns a row vector when both START and
-//     END are scalars.
-//
-//  (unsupported)
-//     If one, or both, inputs are vectors, then
-//     'linspace' transforms them to column vectors and returns a matrix
-//     where each row is an independent sequence between
-//     'START(ROW_N), END(ROW_N)'.
-//
-//     For compatibility with MATLAB, return the second argument (END)
-//     when only a single value (N = 1) is requested.
-//
-//-----------------------------------------------------------------------------
-
+//! returns a dense identity matrix
 template<typename P>
-std::enable_if_t<std::is_floating_point_v<P>, fk::vector<P>>
-linspace(P const start, P const end, unsigned int const num_elems = 100);
-
-template<typename P>
-fk::matrix<P> eye(int const M = 1);
-template<typename P>
-fk::matrix<P> eye(int const M, int const N);
-
-template<typename P>
-P polyval(fk::vector<P> const &p, P const x);
-
-template<typename P>
-fk::vector<P> polyval(fk::vector<P> const &p, fk::vector<P> const &x);
-
-// norm( , 2) function, only for real vectors (2-norm)
-template<typename P>
-P l2_norm(fk::vector<P> const &vec);
+fk::matrix<P> eye(int const M)
+{
+  fk::matrix<P> id(M, M);
+  for (int i = 0; i < M; ++i)
+    id(i, i) = 1.0;
+  return id;
+}
 
 // find the indices in an fk::vector for which the predicate is true
 template<typename P, typename Func>
@@ -127,12 +88,6 @@ fk::matrix<P> read_matrix_from_txt_file(std::filesystem::path const &path);
 // stitch matrices having equal # of rows together horizontally
 template<typename P>
 fk::matrix<P> horz_matrix_concat(std::vector<fk::matrix<P>> const &matrices);
-
-// limited subset of matbal meshgrid
-fk::matrix<int> meshgrid(int const start, int const length);
-
-template<typename P, mem_type mem>
-fk::matrix<P> reshape(fk::matrix<P, mem> &mat, int const nrow, int const ncol);
 
 template<typename P>
 fk::vector<P> interp1(fk::vector<P> const &sample, fk::vector<P> const &values,

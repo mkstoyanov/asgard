@@ -33,7 +33,7 @@ void time_advance_test(prog_opts const &opts,
 
   silent_opts.ignore_exact = true;
 
-  discretization_manager disc(make_PDE<P>(silent_opts));
+  discretization_manager<P> disc(make_PDE<P>(silent_opts));
 
   // -- time loop
   for (auto i : indexof(disc.final_time_step()))
@@ -907,7 +907,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - twostream - ASG", "[imex][adapt]",
   TestType E_kin_initial = 0.0;
 
   // number of DOF for the FG case: ((degree + 1) * 2^level)^2 = 9.216e3
-  int const fg_dof = fm::ipow((degree + 1) * fm::two_raised_to(levels), 2);
+  int const fg_dof = fm::ipow((degree + 1) * fm::ipow2(levels), 2);
 
   // -- time loop
   for (auto i : indexof(disc.final_time_step()))
@@ -1024,7 +1024,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x1v", "[imex]", test_precs)
       // calculate L2 error between simulation and analytical solution
       TestType const L2 = nrm2_dist(f_val, analytic_solution);
       TestType const relative_error =
-          TestType{100.0} * (L2 / asgard::l2_norm(analytic_solution));
+          TestType{100.0} * (L2 / fm::nrm2(analytic_solution));
       auto const [l2_errors, relative_errors] =
           asgard::gather_errors<TestType>(L2, relative_error);
       expect(l2_errors.size() == relative_errors.size());

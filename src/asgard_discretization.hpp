@@ -5,7 +5,7 @@
 #include "asgard_moment.hpp"
 #include "asgard_solver.hpp"
 
-#ifdef ASGARD_IO_HIGHFIVE
+#ifdef ASGARD_USE_HIGHFIVE
 #include "asgard_io.hpp"
 #endif
 
@@ -260,7 +260,7 @@ protected:
     int const level      = pde->get_dimensions()[0].get_level();
     precision const min  = pde->get_dimensions()[0].domain_min;
     precision const max  = pde->get_dimensions()[0].domain_max;
-    int const N_elements = fm::two_raised_to(level);
+    int const N_elements = fm::ipow2(level);
 
     int const quad_dense_size = dense_dim_size(ASGARD_NUM_QUADRATURE - 1, level);
 
