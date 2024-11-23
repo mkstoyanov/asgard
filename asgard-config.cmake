@@ -6,7 +6,7 @@ endif()
 
 @PACKAGE_INIT@
 
-include("@CMAKE_INSTALL_PREFIX@/lib/@CMAKE_PROJECT_NAME@/@CMAKE_PROJECT_NAME@-targets.cmake")
+include("@__asgard_install_prefix@/lib/@CMAKE_PROJECT_NAME@/@CMAKE_PROJECT_NAME@-targets.cmake")
 
 if ("@ASGARD_USE_MPI@" AND NOT TARGET MPI::MPI_CXX)
   if (NOT MPI_HOME AND NOT DEFINED ENV{MPI_HOME})
@@ -41,10 +41,13 @@ target_link_libraries (asgard::LINALG
 
 if (@ASGARD_USE_HIGHFIVE@)
   enable_language (C)
+  if (@__asgard_find_hdf5@)
+    find_package (HDF5 REQUIRED)
+  endif()
 endif()
 
 add_executable(asgard::exe IMPORTED)
-set_property(TARGET asgard::exe PROPERTY IMPORTED_LOCATION "@CMAKE_INSTALL_PREFIX@/bin/asgard${CMAKE_EXECUTABLE_SUFFIX_CXX}")
+set_property(TARGET asgard::exe PROPERTY IMPORTED_LOCATION "@__asgard_install_prefix@/bin/asgard${CMAKE_EXECUTABLE_SUFFIX_CXX}")
 
 add_library(asgard::asgard INTERFACE IMPORTED GLOBAL)
 target_link_libraries(asgard::asgard INTERFACE libasgard)
