@@ -261,8 +261,27 @@ class pde_snapshot:
         return s
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 2 or sys.argv[1] in ("-v", "-version", "--version"):
         libasgard.asgard_print_version_help()
+    elif sys.argv[1] in ("-h", "-help", "--help"):
+        print("")
+        print("python -m asgard plt.data")
+        print("   makes a quick 1D or 2D plot of output contained in out.data")
+        print("")
+        print("python -m asgard -g plt.data")
+        print("   makes a quick 1D or 2D plot of the grid contained in out.data")
+        print("")
+        print("python -m asgard -s plt.data")
+        print("   shows summary of the snapshot contained in the out.data")
+        print("")
+        print("options:")
+        print(" -h, -help, --help           : shows this help text")
+        print(" -v, -version, --version     : shows the library version info")
+        print(" -s, -stat, -stats, -summary : shows the summary of a snapshot")
+        print(" -g, -grid                   : plot the grid")
+        print("")
+        print("no file and no option provided, shows the version of the")
+        print("")
     elif sys.argv[1] in ("-s", "-stat", "-stats", "-summary"):
         if len(sys.argv) < 3:
             print("stats summary option requires a filename")
@@ -274,6 +293,26 @@ if __name__ == "__main__":
         print("can only print stats-summary, use")
         print("  python3 -m asgard -s %s" % sys.argv[2])
         libasgard.asgard_print_version_help()
+    elif sys.argv[1] in ("-grid", "-g"):
+        if len(sys.argv) < 3:
+            print("-grid option requires a filename")
+        else:
+            shot = pde_snapshot(sys.argv[2])
+            print("\n", shot)
+
+            asgplot.title(shot.title, fontsize = 'large')
+
+            cells = shot.cell_centers()
+            if shot.num_dimensions == 1:
+                asgplot.plot(cells[:,0], np.zeros(cells[:,0].shape), 'ro')
+            else:
+                asgplot.scatter(cells[:,0], cells[:,1], 5 * np.ones(cells[:,0].shape), color='red')
+
+        if len(sys.argv) > 3:
+            asgplot.savefig(sys.argv[3])
+        else:
+            asgplot.show()
+
     else:
         shot = pde_snapshot(sys.argv[1])
         print("\n", shot)
