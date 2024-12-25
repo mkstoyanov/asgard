@@ -18,8 +18,7 @@ public:
   {
     int constexpr num_dims          = 2;
     int constexpr num_sources       = 0;
-    int constexpr num_terms         = 4;
-    bool constexpr do_poisson_solve = true;
+    int constexpr num_terms         = 4; // should be 4
     // disable implicit steps in IMEX
     bool constexpr do_collision_operator = false;
     bool constexpr has_analytic_soln     = false;
@@ -36,22 +35,17 @@ public:
                      // defining the set of terms
                      term_set<P>{std::vector<term<P>>{term_e1x, term_e1v},
                                  std::vector<term<P>>{term_e2x, term_e2v},
-                                 std::vector<term<P>>{E_mass_x_pos, div_v_dn},
-                                 std::vector<term<P>>{E_mass_x_neg, div_v_up}},
+                                 std::vector<term<P>>{Emass_pos, div_v_dn},
+                                 std::vector<term<P>>{Emass_neg, div_v_up},
+                                 },
                      std::vector<source<P>>{},       // no sources
                      std::vector<md_func_type<P>>{}, // no exact solution
-                     get_dt_, do_poisson_solve, has_analytic_soln,
-                     init_moments, do_collision_operator);
-
-    param_manager.add_parameter(parameter<P>{"n", n});
-    param_manager.add_parameter(parameter<P>{"u", u});
-    param_manager.add_parameter(parameter<P>{"theta", theta});
-    param_manager.add_parameter(parameter<P>{"E", E});
-    param_manager.add_parameter(parameter<P>{"S", S});
-    param_manager.add_parameter(parameter<P>{"MaxAbsE", MaxAbsE});
+                     get_dt_, has_analytic_soln, moment_funcs<P>{},
+                     do_collision_operator);
   }
 
 private:
+
   static fk::vector<P>
   initial_condition_dim_x_0(fk::vector<P> const &x, P const t = 0)
   {
@@ -76,80 +70,6 @@ private:
           return coefficient * std::pow(x_v, 2) * std::exp(-std::pow(x_v, 2));
         });
     return fx;
-  }
-
-  /* Define the moments */
-  static fk::vector<P> moment0_f1(fk::vector<P> const &x, P const t = 0)
-  {
-    ignore(t);
-
-    fk::vector<P> f(x.size());
-    std::fill(f.begin(), f.end(), 1.0);
-    return f;
-  }
-
-  static fk::vector<P> moment1_f1(fk::vector<P> const &x, P const t = 0)
-  {
-    ignore(t);
-    return fk::vector<P>(x);
-  }
-
-  static fk::vector<P> moment2_f1(fk::vector<P> const &x, P const t = 0)
-  {
-    ignore(t);
-
-    fk::vector<P> f(x.size());
-    std::transform(x.begin(), x.end(), f.begin(),
-                   [](P const &x_v) -> P { return std::pow(x_v, 2); });
-    return f;
-  }
-
-  inline static moment_funcs<P> init_moments = {
-      {{moment0_f1, moment0_f1, moment0_f1}},
-      {{moment0_f1, moment1_f1, moment0_f1}},
-      {{moment0_f1, moment2_f1, moment0_f1}}};
-
-  /* Construct (n, u, theta) */
-  static P n(P const &x, P const t = 0)
-  {
-    ignore(t);
-
-    return (1.0 - 0.5 * std::cos(0.5 * x)) * 0.5;
-  }
-
-  static P u(P const &x, P const t = 0)
-  {
-    ignore(t);
-    ignore(x);
-    return 0.0;
-  }
-
-  static P theta(P const &x, P const t = 0)
-  {
-    ignore(t);
-    ignore(x);
-    return 1.5;
-  }
-
-  static P E(P const &x, P const t = 0)
-  {
-    ignore(t);
-    ignore(x);
-    return 0.0;
-  }
-
-  static P S(P const &y, P const t = 0)
-  {
-    ignore(t);
-    // subtracts quadrature values by one
-    return y - 1.0;
-  }
-
-  static P MaxAbsE(P const &x, P const t = 0)
-  {
-    ignore(t);
-    ignore(x);
-    return 0.0;
   }
 
   /* build the terms */
@@ -226,31 +146,8 @@ private:
   // -E\cdot\grad_v f for E > 0
   //
 
-  static P E_func_pos(P const x, P const time = 0)
-  {
-    auto param = param_manager.get_parameter("E");
-    expect(param != nullptr);
-    return std::max(P{0.0}, param->value(x, time));
-  }
-
-  static P negOne(P const x, P const time = 0)
-  {
-    ignore(x);
-    ignore(time);
-    return -1.0;
-  }
-
-  inline static const partial_term<P> pterm_E_mass_x_pos = partial_term<P>(
-      coefficient_type::mass, E_func_pos, nullptr, flux_type::central,
-      boundary_condition::periodic, boundary_condition::periodic);
-
-  inline static term<P> const E_mass_x_pos =
-      term<P>(true, // time-dependent
-              "",   // name
-              {pterm_E_mass_x_pos}, imex_flag::imex_explicit);
-
   inline static const partial_term<P> pterm_div_v_dn = partial_term<P>(
-      coefficient_type::div, negOne, nullptr, flux_type::upwind,
+      coefficient_type::div, PDE<P>::gfunc_neg1, nullptr, flux_type::upwind,
       boundary_condition::dirichlet, boundary_condition::dirichlet,
       homogeneity::homogeneous, homogeneity::homogeneous);
 
@@ -263,24 +160,8 @@ private:
   // E\cdot\grad_v f for E < 0
   //
 
-  static P E_func_neg(P const x, P const time = 0)
-  {
-    auto param = param_manager.get_parameter("E");
-    expect(param != nullptr);
-    return std::min(P{0.0}, param->value(x, time));
-  }
-
-  inline static const partial_term<P> pterm_E_mass_x_neg = partial_term<P>(
-      coefficient_type::mass, E_func_neg, nullptr, flux_type::central,
-      boundary_condition::periodic, boundary_condition::periodic);
-
-  inline static term<P> const E_mass_x_neg =
-      term<P>(true, // time-dependent
-              "",   // name
-              {pterm_E_mass_x_neg}, imex_flag::imex_explicit);
-
   inline static const partial_term<P> pterm_div_v_up = partial_term<P>(
-      coefficient_type::div, negOne, nullptr, flux_type::downwind,
+      coefficient_type::div, PDE<P>::gfunc_neg1, nullptr, flux_type::downwind,
       boundary_condition::dirichlet, boundary_condition::dirichlet,
       homogeneity::homogeneous, homogeneity::homogeneous);
 
@@ -288,6 +169,20 @@ private:
       term<P>(false, // time-dependent
               "",    // name
               {pterm_div_v_up}, imex_flag::imex_explicit);
+
+  inline static const partial_term<P> ptEmass_pos = partial_term<P>(
+      coefficient_type::mass, pterm_dependence::electric_field, PDE<P>::gfunc_f_positive);
+  inline static const partial_term<P> ptEmass_neg = partial_term<P>(
+      coefficient_type::mass, pterm_dependence::electric_field, PDE<P>::gfunc_f_negative);
+
+  inline static term<P> const Emass_pos =
+      term<P>(true, // time-dependent
+              "",   // name
+              {ptEmass_pos, }, imex_flag::imex_explicit);
+  inline static term<P> const Emass_neg =
+      term<P>(true, // time-dependent
+              "",   // name
+              {ptEmass_neg, }, imex_flag::imex_explicit);
 
   static P get_dt_(dimension<P> const &dim)
   {

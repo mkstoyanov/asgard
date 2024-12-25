@@ -38,7 +38,7 @@ inline int intlog2(int x)
 }
 // computes std::pow( 2, std::floor( std::log2(x) ) )
 // using only integer bit-shifts
-inline int int2_raised_to_log2(int x)
+inline int ipow2_log2(int x)
 {
   int result = 1;
   while (x >>= 1)
@@ -46,7 +46,7 @@ inline int int2_raised_to_log2(int x)
   return result;
 }
 // two outputs in one operation
-// computes int2_raised_to_log2(i) and std::pow(std::sqrt(2.0), intlog2(i))
+// computes ipow2_log2(i) and std::pow(std::sqrt(2.0), intlog2(i))
 inline void intlog2_pow2pows2(int x, int &i2l2, double &is2l2)
 {
   i2l2  = 1;
@@ -65,6 +65,14 @@ inline double half_raided_to_intlog2(int x)
   while (x >>= 1)
     result *= 0.5;
   return result;
+}
+//! computes base^p where p is in integer
+template<typename P>
+P powi(P base, int p) {
+  P res = 1;
+  while (--p > -1)
+    res *= base;
+  return res;
 }
 
 template<typename vec_type>
@@ -497,6 +505,20 @@ void pttrf(fk::vector<P, dmem> &D, fk::vector<P, emem> &E)
                     " in call to pttrf() has an illegal value\n"));
   }
 }
+template<typename P>
+void pttrf(std::vector<P> &diag, std::vector<P> &subdiag)
+{
+  int size = static_cast<int>(diag.size());
+
+  expect(not diag.empty());
+  expect(subdiag.size() + 1 == diag.size());
+
+  int info = lib_dispatch::pttrf(size, diag.data(), subdiag.data());
+  if (info < 0)
+    throw std::runtime_error(
+        std::string("Argument " + std::to_string(info) +
+                    " in call to pttrf() has an illegal value\n"));
+}
 
 /** pttrs - solves a tridiagonal system of the form A * X = B using the L*D*L**T
  * factoration of A computed by pttrf.
@@ -517,6 +539,25 @@ void pttrs(fk::vector<P, dmem> const &D, fk::vector<P, emem> const &E,
   expect(E.size() == N - 1);
 
   int info = lib_dispatch::pttrs(N, nrhs, D.data(), E.data(), B.data(), ldb);
+  if (info < 0)
+  {
+    throw std::runtime_error(
+        std::string("Argument " + std::to_string(info) +
+                    " in call to pttrs() has an illegal value\n"));
+  }
+}
+template<typename P>
+void pttrs(std::vector<P> const &D, std::vector<P> const &E, std::vector<P> &B)
+{
+  int constexpr nrhs = 1;
+
+  int const N = static_cast<int>(D.size());
+
+  expect(N >= 0);
+  expect(nrhs >= 0);
+  expect(E.size() + 1 == static_cast<size_t>(N));
+
+  int info = lib_dispatch::pttrs(N, nrhs, D.data(), E.data(), B.data(), N);
   if (info < 0)
   {
     throw std::runtime_error(

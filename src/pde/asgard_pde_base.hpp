@@ -57,6 +57,13 @@ enum class coefficient_type
   penalty
 };
 
+enum class pterm_dependence
+{
+  none, // nothing special, uses generic g-func
+  electric_field, // depends on the electric field
+  electric_field_infnrm, // depends on the max abs( electric_field )
+};
+
 template<coefficient_type>
 struct has_flux_t : public std::true_type{};
 
@@ -71,7 +78,6 @@ constexpr bool has_flux(coefficient_type t) {
 
 enum class flux_type
 {
-
   upwind        = -1,
   central       = 0,
   downwind      = 1,
@@ -148,6 +154,34 @@ public:
         right_bc_time_func_(right_bc_time_func_in), dv_func_(dv_func_in)
   {}
 
+  partial_term(coefficient_type const coeff_type_in,
+               pterm_dependence const depends_in,
+               g_func_f_type<P> const g_func_f_in    = nullptr,
+               g_func_type<P> const lhs_mass_func_in = nullptr,
+               flux_type const flux_in               = flux_type::central,
+               boundary_condition const left_in  = boundary_condition::neumann,
+               boundary_condition const right_in = boundary_condition::neumann,
+               homogeneity const left_homo_in    = homogeneity::homogeneous,
+               homogeneity const right_homo_in   = homogeneity::homogeneous,
+               std::vector<vector_func<P>> const left_bc_funcs_in  = {},
+               scalar_func<P> const left_bc_time_func_in           = nullptr,
+               std::vector<vector_func<P>> const right_bc_funcs_in = {},
+               scalar_func<P> const right_bc_time_func_in          = nullptr,
+               g_func_type<P> const dv_func_in                     = nullptr)
+
+      : coeff_type_(coeff_type_in), depends_(depends_in), g_func_f_(g_func_f_in),
+        lhs_mass_func_(lhs_mass_func_in), flux_(set_flux(flux_in)), left_(left_in),
+        right_(right_in), ileft_(set_bilinear_boundary(left_in)),
+        iright_(set_bilinear_boundary(right_in)), left_homo_(left_homo_in),
+        right_homo_(right_homo_in), left_bc_funcs_(left_bc_funcs_in),
+        right_bc_funcs_(right_bc_funcs_in),
+        left_bc_time_func_(left_bc_time_func_in),
+        right_bc_time_func_(right_bc_time_func_in), dv_func_(dv_func_in)
+  {
+    expect(depends_ != pterm_dependence::none);
+    expect(coeff_type_ == coefficient_type::mass); // have not done the others yet
+  }
+
   P get_flux_scale() const { return static_cast<P>(flux_); };
 
   boundary_condition set_bilinear_boundary(boundary_condition const bc)
@@ -183,8 +217,16 @@ public:
   }
 
   coefficient_type coeff_type() const { return coeff_type_; }
+  pterm_dependence depends() const { return depends_; }
+
+  bool is_identity() const
+  {
+    return (coeff_type_ == coefficient_type::mass and not g_func_ and not g_func_f_
+            and not lhs_mass_func_ and not dv_func_);
+  }
 
   g_func_type<P> const &g_func() const { return g_func_; }
+  g_func_f_type<P> const &g_func_f() const { return g_func_f_; }
   g_func_type<P> const &lhs_mass_func() const { return lhs_mass_func_; }
 
   flux_type flux() const { return flux_; }
@@ -226,7 +268,10 @@ public:
 private:
   coefficient_type coeff_type_;
 
+  pterm_dependence depends_ = pterm_dependence::none;
+
   g_func_type<P> g_func_;
+  g_func_f_type<P> g_func_f_;
   g_func_type<P> lhs_mass_func_;
 
   flux_type flux_;
@@ -269,6 +314,25 @@ public:
   std::string const &name() const { return name_; }
 
   imex_flag flag() const { return flag_; }
+
+  bool has_dependence(pterm_dependence dep) const {
+    for (auto const &pt : partial_terms_)
+      if (pt.depends() == dep)
+        return true;
+    return false;
+  }
+  bool is_moment_independant() const {
+    for (auto const &pt : partial_terms_)
+      if (pt.depends() != pterm_dependence::none)
+        return false;
+    return true;
+  }
+  bool is_identity() const {
+    for (auto const &pt : partial_terms_)
+      if (not pt.is_identity())
+        return false;
+    return true;
+  }
 
 private:
   bool time_dependent_;
@@ -399,14 +463,13 @@ public:
       term_set<P> const terms, std::vector<source<P>> const sources_in,
       std::vector<vector_func<P>> const exact_vector_funcs_in,
       dt_func<P> const get_dt,
-      bool const do_poisson_solve_in      = false,
       bool const has_analytic_soln_in     = false,
       moment_funcs<P> const moments_in    = {},
       bool const do_collision_operator_in = true)
       : PDE(cli_input, num_dims_in, num_sources_in, max_num_terms, dimensions,
             terms, sources_in,
             std::vector<md_func_type<P>>({exact_vector_funcs_in}),
-            get_dt, do_poisson_solve_in, has_analytic_soln_in,
+            get_dt, has_analytic_soln_in,
             moments_in, do_collision_operator_in)
   {}
   PDE(prog_opts const &cli_input, int const num_dims_in, int const num_sources_in,
@@ -414,7 +477,6 @@ public:
       term_set<P> terms, std::vector<source<P>> sources_in,
       std::vector<md_func_type<P>> exact_vector_funcs_in,
       dt_func<P> get_dt,
-      bool const do_poisson_solve_in      = false,
       bool const has_analytic_soln_in     = false,
       moment_funcs<P> moments_in          = {},
       bool const do_collision_operator_in = true)
@@ -423,7 +485,6 @@ public:
       max_num_terms, std::move(dimensions), std::move(terms), std::move(sources_in),
       std::move(exact_vector_funcs_in),
       std::move(get_dt),
-      do_poisson_solve_in,
       has_analytic_soln_in,
       std::move(moments_in),
       do_collision_operator_in);
@@ -434,14 +495,13 @@ public:
       term_set<P> const &terms, std::vector<source<P>> const &sources_in,
       std::vector<vector_func<P>> const &exact_vector_funcs_in,
       dt_func<P> const &get_dt,
-      bool const do_poisson_solve_in      = false,
       bool const has_analytic_soln_in     = false,
       moment_funcs<P> const &moments_in   = {},
       bool const do_collision_operator_in = true)
   {
     this->initialize(cli_input, num_dims_in, num_sources_in, max_num_terms, dimensions,
                      terms, sources_in, std::vector<md_func_type<P>>({exact_vector_funcs_in}),
-                     get_dt, do_poisson_solve_in, has_analytic_soln_in, moments_in,
+                     get_dt, has_analytic_soln_in, moments_in,
                      do_collision_operator_in);
   }
   void initialize(prog_opts const &cli_input, int const num_dims_in, int const num_sources_in,
@@ -449,7 +509,6 @@ public:
       term_set<P> const &terms, std::vector<source<P>> const &sources_in,
       std::vector<md_func_type<P>> const &exact_vector_funcs_in,
       dt_func<P> const &get_dt,
-      bool const do_poisson_solve_in      = false,
       bool const has_analytic_soln_in     = false,
       moment_funcs<P> const &moments_in   = {},
       bool const do_collision_operator_in = true)
@@ -458,8 +517,7 @@ public:
                      std::vector<dimension<P>>(dimensions), term_set<P>(terms),
                      std::vector<source<P>>(sources_in),
                      std::vector<md_func_type<P>>(exact_vector_funcs_in),
-                     dt_func<P>(get_dt), do_poisson_solve_in,
-                     has_analytic_soln_in, moment_funcs<P>(moments_in),
+                     dt_func<P>(get_dt), has_analytic_soln_in, moment_funcs<P>(moments_in),
                      do_collision_operator_in);
   }
 
@@ -468,7 +526,6 @@ public:
       term_set<P> &&terms, std::vector<source<P>> &&sources_in,
       std::vector<md_func_type<P>> &&exact_vector_funcs_in,
       dt_func<P> &&get_dt,
-      bool const do_poisson_solve_in      = false,
       bool const has_analytic_soln_in     = false,
       moment_funcs<P> &&moments_in        = {},
       bool const do_collision_operator_in = true)
@@ -494,7 +551,6 @@ public:
     exact_vector_funcs_ = std::move(exact_vector_funcs_in);
     initial_moments     = std::move(moments_in);
 
-    do_poisson_solve_      = do_poisson_solve_in;
     do_collision_operator_ = do_collision_operator_in;
     has_analytic_soln_     = has_analytic_soln_in;
     dimensions_            = std::move(dimensions);
@@ -646,8 +702,8 @@ public:
         expect(md_func.size() == static_cast<unsigned>(num_dims_) + 1);
     }
 
-    rassert(not (use_imex_ and initial_moments.empty()),
-            "incorrect pde/time-step pair, the imex method requires moments");
+    // rassert(not (use_imex_ and initial_moments.empty()),
+    //        "incorrect pde/time-step pair, the imex method requires moments");
 
     gmres_outputs.resize(use_imex_ ? 2 : 1);
 
@@ -685,14 +741,13 @@ public:
         num_dims_(1), num_sources_(pde.sources_.size()),
         num_terms_(pde.get_terms().size()), max_level_(pde.max_level_),
         sources_(pde.sources_), exact_vector_funcs_(pde.exact_vector_funcs_),
-        do_poisson_solve_(pde.do_poisson_solve()),
         do_collision_operator_(pde.do_collision_operator()),
         has_analytic_soln_(pde.has_analytic_soln()),
         dimensions_({pde.get_dimensions()[0]}), terms_(pde.get_terms())
   {
     options_.grid          = grid_type::dense;
-    options_.start_levels  = {pde.options_.start_levels[0], };
-    options_.max_levels    = {pde.options_.max_levels[0], };
+    options_.start_levels  = {pde.get_dimensions().front().get_level(), };
+    options_.max_levels    = {pde.max_level(), };
   }
 
   const prog_opts &options() const { return options_; }
@@ -732,11 +787,20 @@ public:
   }
 
   moment_funcs<P> initial_moments;
-  bool do_poisson_solve() const { return do_poisson_solve_; }
+
+  bool do_poisson_solve() const { // TODO: rename to poisson dependence
+    for (auto const &terms_md : terms_)
+      for (auto const &term1d : terms_md)
+        if (term1d.has_dependence(pterm_dependence::electric_field))
+          return true;
+
+    // no terms have the poisson dependence
+    return false;
+  }
   bool do_collision_operator() const { return do_collision_operator_; }
   bool has_analytic_soln() const { return has_analytic_soln_; }
 
-  // data for poisson solver
+  // data for the Poisson-electric field
   fk::vector<P> poisson_diag;
   fk::vector<P> poisson_off_diag;
 
@@ -906,6 +970,23 @@ protected:
 
   std::function<void(P t, vector2d<P> const &, std::vector<P> &)> interp_exact_;
 
+  // commonly used building blocks of g_funcs
+  static P gfunc_pos1(P const, P const) {
+    return P{1};
+  }
+  static P gfunc_neg1(P const, P const) {
+    return P{-1};
+  }
+  static P gfunc_f_field(P const, P const, P const f) {
+    return f;
+  }
+  static P gfunc_f_positive(P const, P const, P const f) {
+    return std::max(P{0}, f);
+  }
+  static P gfunc_f_negative(P const, P const, P const f) {
+    return std::min(P{0}, f);
+  }
+
 private:
   prog_opts options_;
 
@@ -917,7 +998,6 @@ private:
   std::vector<source<P>> sources_;
   std::vector<md_func_type<P>> exact_vector_funcs_;
 
-  bool do_poisson_solve_      = false;
   bool do_collision_operator_ = false;
   bool has_analytic_soln_     = false;
 

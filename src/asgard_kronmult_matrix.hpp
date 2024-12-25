@@ -11,6 +11,28 @@ namespace asgard
 
 /*!
  * \internal
+ * \brief Additional data for term coupling, e.g., Poisson electric field
+ *
+ * This just holds a bunch of vectors with data needed for the term coefficients,
+ * the data depends on coupling, e.g., moments or Poisson solver, and thus
+ * cannot be hard-coded in the PDE spec.
+ *
+ * Note to devs: this will replace the parameter_manager singleton
+ * and will allow for tighter integration with the coefficient construciton.
+ *
+ * \endinternal
+ */
+template<typename P>
+struct coupled_term_data
+{
+  //! electic field from the Poisson solver
+  std::vector<P> electric_field;
+  //! max-absolute value of the electric field
+  std::optional<P> electric_field_infnrm;
+};
+
+/*!
+ * \internal
  * \brief Stores the matrices for the pde operators
  *
  * This is a container class for the different types of mass and coefficient
@@ -23,7 +45,8 @@ struct coefficient_matrices
 {
   //! initializes the storage space and the non-Cartesian volumes
   coefficient_matrices(PDE<P> &pde)
-      : num_dimensions_(pde.num_dims()), num_terms_(pde.num_terms())
+      : num_dimensions_(pde.num_dims()), num_terms_(pde.num_terms()),
+        current_levels(num_terms_, num_dimensions_)
   {
     for (int d : indexof<int>(num_dimensions_))
       if (pde.get_dimensions()[d].volume_jacobian_dV)
@@ -48,6 +71,8 @@ struct coefficient_matrices
         pterm_mass[t * num_dimensions_ + d].resize(size);
         pterm_coeffs[t * num_dimensions_ + d].resize(size);
       }
+
+    std::fill_n(current_levels[0], num_dimensions_ * num_terms_, -1);
   }
 
   //! dimension mass matrices, e.g., associated with the coordinates (Cartesian or non-Cartesian)
@@ -63,6 +88,9 @@ struct coefficient_matrices
   //! TODO (remove this) all pterm coefficients, used for boundary conds.
   std::vector<std::vector<block_sparse_matrix<P>>> pterm_coeffs;
 
+  //! additional (extra) data for the moment coupling
+  coupled_term_data<P> edata;
+
   //! number of initialized dimensions
   int num_dimensions() const { return num_dimensions_; }
   //! number of initialized terms
@@ -70,6 +98,10 @@ struct coefficient_matrices
 
 private:
   int num_dimensions_, num_terms_;
+
+public:
+  //! allows selective recompute of only terms with time-dependence
+  vector2d<int> current_levels;
 };
 
 /*!
@@ -77,13 +109,6 @@ private:
  */
 template<typename precision>
 std::vector<int> get_used_terms(PDE<precision> const &pde, imex_flag const imex);
-
-/*!
- * \brief Converts the cells into a vector2d structure
- */
-template<typename precision>
-vector2d<int> get_cells(int num_dimensions,
-                        adapt::distributed_grid<precision> const &dis_grid);
 
 #ifndef KRON_MODE_GLOBAL
 // using LOCAL kronmult, can be parallelised using MPI but much more expensive

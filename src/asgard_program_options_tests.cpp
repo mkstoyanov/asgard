@@ -64,6 +64,8 @@ TEST_CASE("new program options", "[single options]")
     prog_opts prog2(vecstrview({"", "-an", "linf"}));
     REQUIRE(!!prog2.anorm);
     REQUIRE(*prog2.anorm == adapt_norm::linf);
+    prog_opts prog3(vecstrview({"", "-an", "linf", "-noa"}));
+    REQUIRE(not prog3.anorm);
   }
   SECTION("-grid")
   {
@@ -83,16 +85,6 @@ TEST_CASE("new program options", "[single options]")
                         "missing mixed grid number, see exe -help");
     prog_opts opts3(vecstrview({"exe", "-g", "sparse"}));
     REQUIRE_FALSE(opts3.mgrid_group);
-  }
-  SECTION("-electric-solve")
-  {
-    REQUIRE_FALSE(!!prog_opts(vecstrview({""})).set_electric);
-    prog_opts prog(vecstrview({"", "-electric-solve"}));
-    REQUIRE(prog.set_electric);
-    REQUIRE(prog.set_electric.value());
-    prog_opts prog2(vecstrview({"", "-es"}));
-    REQUIRE(prog2.set_electric);
-    REQUIRE(prog2.set_electric.value());
   }
   SECTION("-start-levels")
   {
@@ -176,6 +168,7 @@ TEST_CASE("new program options", "[single options]")
     REQUIRE(prog.adapt_threshold);
     REQUIRE(prog.adapt_threshold.value() == 0.5);
     REQUIRE(prog_opts(vecstrview({"exe", "-adapt", "0.1"})).adapt_threshold);
+    REQUIRE(not prog_opts(vecstrview({"exe", "-adapt", "0.1", "-noadapt"})).adapt_threshold);
     REQUIRE_THROWS_WITH(prog_opts(vecstrview({"exe", "-a"})),
                         "-a must be followed by a value, see exe -help");
     REQUIRE_THROWS_WITH(prog_opts(vecstrview({"exe", "-adapt", "dummy"})),

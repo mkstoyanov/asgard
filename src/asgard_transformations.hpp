@@ -335,6 +335,32 @@ public:
     project1d(dim, level, dmax[dim] - dmin[dim], mass);
   }
 
+  //! (testing purposes, skips hierarchy) computes the 1d projection of f onto the cells of a given level
+  std::vector<P> cell_project(function_1d<P> const &f, function_1d<P> const &dv, int level) const
+  {
+    int constexpr dim = 0;
+    level_mass_matrces<P> mass;
+
+    int const num_cells = fm::ipow2(level);
+    prepare_quadrature(dim, num_cells);
+    fvals.resize(quad_points[dim].size()); // quad_points are resized and loaded above
+    f(quad_points[dim], fvals);
+
+    if (dv) // if using non-Cartesian coordinates
+    {
+      apply_dv_dvals(dim, dv);
+      mass.set_non_identity();
+      if (not mass.has_level(level))
+        mass[level] = make_mass(dim, level); // uses quad_dv computed above
+    }
+
+    // project onto the basis
+    bool constexpr skip_hier = true;
+    project1d<skip_hier>(dim, level, dmax[dim] - dmin[dim], mass);
+
+    return stage0;
+  }
+
   //! create the mass matrix for the given dim and level
   void make_mass(int dim, int level, function_1d<P> const &dv,
                  level_mass_matrces<P> &mass) const
@@ -352,7 +378,7 @@ public:
   //! return the 1d projection in the given direction
   std::vector<P> const &get_projected1d(int dim) const { return pf[dim]; }
 
-  //! transforms the vectors to hierarchical representation
+  //! transforms the vector to a hierarchical representation
   void project1d(int const level, fk::vector<P> &x) const
   {
     int64_t const size = fm::ipow2(level) * (degree_ + 1);
@@ -373,6 +399,31 @@ public:
     };
     std::copy_n(pf[0].begin(), size, x.begin());
   }
+  //! transforms the vector to a hierarchical representation
+  void project1d(int const level, std::vector<P> &x) const
+  {
+    if (level == 0) // nothing to project at level 0
+      return;
+    int64_t const size = fm::ipow2(level) * (degree_ + 1);
+    expect(size == static_cast<int64_t>(x.size()));
+    stage0.resize(size);
+    pf[0].resize(size);
+    std::copy_n(x.begin(), size, stage0.begin());
+    switch (degree_)
+    { // hardcoded degrees first, the default uses the projection matrices
+    case 0:
+      projectlevels<0>(0, level);
+      break;
+    case 1:
+      projectlevels<1>(0, level);
+      break;
+    default:
+      projectlevels<-1>(0, level);
+    };
+    std::copy_n(pf[0].begin(), size, x.begin());
+  }
+  //! transform the batch of vectors to nodal representation
+  void reconstruct1d(int const nbatch, int const level, span2d<P> hdata) const;
 
   //! size of a multi-dimensional block, i.e., (degree + 1)^d
   int64_t block_size() const { return block_size_; }
@@ -394,6 +445,7 @@ protected:
    * points. The method will convert to local basis coefficients and then convert
    * to hierarchical representation stored in pf.
    */
+  template<bool skip_hierarchy = false>
   void project1d(int dim, int level, P const dsize, level_mass_matrces<P> const &mass) const;
 
   static constexpr P s2 = 1.41421356237309505; // std::sqrt(2.0)
@@ -436,6 +488,10 @@ protected:
    */
   template<int tdegree>
   void projectlevels(int dim, int levels) const;
+
+  //! tempalted version for reduction of runtime if-statements
+  template<int tdegree>
+  void reconstruct1d(int const nbatch, int level, span2d<P> data) const;
 
   //! creates a new sparse matrix with the given format
   block_sparse_matrix<P> make_block_sparse_matrix(connection_patterns const &conns,

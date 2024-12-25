@@ -18,9 +18,8 @@ class PDE_relaxation_1x1v : public PDE<P>
 public:
   PDE_relaxation_1x1v(prog_opts const &cli_input)
       : PDE<P>(cli_input, num_dims_, num_sources_, num_terms_, dimensions_,
-               terms_, sources_, exact_vector_funcs_,
-               get_dt_, do_poisson_solve_, has_analytic_soln_, moments_,
-               do_collision_operator_)
+               terms_, sources_, exact_vector_funcs_, get_dt_,
+               has_analytic_soln_, moments_, do_collision_operator_)
   {
     param_manager.add_parameter(parameter<P>{"n", n});
     param_manager.add_parameter(parameter<P>{"u", u});
@@ -31,10 +30,9 @@ public:
   }
 
 private:
-  static int constexpr num_dims_          = 2;
-  static int constexpr num_sources_       = 0;
-  static int constexpr num_terms_         = 3;
-  static bool constexpr do_poisson_solve_ = false;
+  static int constexpr num_dims_    = 2;
+  static int constexpr num_sources_ = 0;
+  static int constexpr num_terms_   = 3;
   // disable implicit steps in IMEX
   static bool constexpr do_collision_operator_ = true;
   static bool constexpr has_analytic_soln_     = true;
@@ -236,7 +234,7 @@ private:
       boundary_condition::dirichlet, boundary_condition::dirichlet);
 
   inline static term<P> const term_i2x =
-      term<P>(false,  // time-dependent
+      term<P>(true,   // time-dependent
               "I2_x", // name
               {i2_pterm_x}, imex_flag::imex_implicit);
 
@@ -267,7 +265,7 @@ private:
       boundary_condition::periodic, boundary_condition::periodic);
 
   inline static term<P> const term_i5x =
-      term<P>(false,  // time-dependent
+      term<P>(true,   // time-dependent
               "I3_x", // name
               {i5_pterm_x1, i5_pterm_x2}, imex_flag::imex_implicit);
 

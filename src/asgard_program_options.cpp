@@ -70,6 +70,7 @@ Options          Short   Value      Description
 -adapt           -a      double     Enable grid adaptivity and set the tolerance threshold.
 -adapt-norm      -an     string     accepts: linf/l2
                                     The norm to use for the refinement criteria.
+-noadapt         -noa    -          Ignore any previously set adapt options
 
 <<< time stepping options >>>
 -step-method     -s      string     accepts: expl/impl/imex
@@ -198,8 +199,8 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv,
       {"-grid", optentry::grid_mode}, {"-g", optentry::grid_mode},
       {"-step-method", optentry::step_method}, {"-s", optentry::step_method},
       {"-adapt-norm", optentry::adapt_norm}, {"-an", optentry::adapt_norm},
-      {"-electric-solve", optentry::set_electric}, {"-es", optentry::set_electric},
       {"-adapt", optentry::adapt_threshold},  {"-a", optentry::adapt_threshold},
+      {"-noadapt", optentry::no_adapt},  {"-noa", optentry::no_adapt},
       {"-start-levels", optentry::start_levels}, {"-l", optentry::start_levels},
       {"-max-levels", optentry::max_levels}, {"-m", optentry::max_levels},
       {"-degree", optentry::degree}, {"-d", optentry::degree},
@@ -352,9 +353,6 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv,
       }
     }
     break;
-    case optentry::set_electric:
-    set_electric = true;
-    break;
     case optentry::start_levels: {
       auto selected = move_process_next();
       if (not selected)
@@ -444,6 +442,10 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv,
         throw std::runtime_error(report_wrong_value());
       }
     }
+    break;
+    case optentry::no_adapt:
+      adapt_threshold.reset();
+      anorm.reset();
     break;
     case optentry::solver: {
       // with only a handful of solvers we don't need to use a map here
@@ -628,6 +630,8 @@ void prog_opts::process_file(std::string_view const &exec_name)
     std::string::size_type sharp = s.find('#');
     if (sharp < s.size())
       en = sharp - 1;
+    if (sharp == 0)
+      return s;
     while (en > be and std::isspace(static_cast<unsigned char>(s[en])))
       en--;
     return s.substr(be, en - be + 1);

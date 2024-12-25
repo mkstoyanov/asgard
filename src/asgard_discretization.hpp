@@ -75,6 +75,8 @@ public:
   discretization_manager(std::unique_ptr<PDE<precision>> &&pde_in,
                          verbosity_level vebosity = verbosity_level::quiet);
 
+  discretization_manager(discretization_manager &&) = default;
+
   //! total degrees of freedom for the problem
   int64_t degrees_of_freedom() const
   {
@@ -134,6 +136,9 @@ public:
                 std::vector<precision> &R) const;
   //! solves x = A^{-1} x where A is the kron_operators with given flag, uses method from options
   void ode_sv(imex_flag imflag, std::vector<precision> &x) const;
+
+  //! compute the electric field for the given state and update the coefficient matrices
+  void do_poisson_update(std::vector<precision> const &field) const;
 
   //! register the next time step and checkpoint
   void set_next_step(fk::vector<precision> const &next,
@@ -210,9 +215,9 @@ public:
   std::vector<moment<precision>> &get_moments() const { return moments; }
   //! returns the coefficient matrices
   coefficient_matrices<precision> &get_cmatrices() const { return matrices; }
-  //! recomputes the coefficients using the new algorithm
-  void compute_coefficients() {
-    generate_all_coefficients(*pde, matrices, conn, hier, time_);
+  //! recomputes the coefficients, can select sub
+  void compute_coefficients(coeff_update_mode mode = coeff_update_mode::all) {
+    generate_coefficients(*pde, matrices, conn, hier, time_, mode);
 #ifndef KRON_MODE_GLOBAL
     pde->coeffs_.resize(pde->num_terms() * pde->num_dims());
     for (int64_t t : indexof(pde->coeffs_.size()))
@@ -231,6 +236,14 @@ public:
                                       int64_t num_steps);
 #endif // __ASGARD_DOXYGEN_SKIP_INTERNAL
 
+  void comp_mats() const { // two stream, compare matrices
+    return;
+    // reference check for operator construction, helps find problems
+    // auto ref = matrices.term_coeffs[4 + i].to_full(conn);
+    // auto com = matrices.term_coeffs[8 + i].to_full(conn);
+    // precision err = std::max(err, ref.max_diff(com));
+  }
+
 protected:
 #ifndef __ASGARD_DOXYGEN_SKIP_INTERNAL
   //! convenient check if we are using high verbosity level
@@ -241,7 +254,12 @@ protected:
   void update_grid_components()
   {
     kronops.clear();
-    compute_coefficients();
+    generate_coefficients(*pde, matrices, conn, hier, time_, coeff_update_mode::independent);
+#ifndef KRON_MODE_GLOBAL
+    pde->coeffs_.resize(pde->num_terms() * pde->num_dims());
+    for (int64_t t : indexof(pde->coeffs_.size()))
+      pde->coeffs_[t] = matrices.term_coeffs[t].to_fk_matrix(degree_ + 1, conn);
+#endif
     auto const my_subgrid = grid.get_subgrid(get_rank());
     fixed_bc = boundary_conditions::make_unscaled_bc_parts(
         *pde, grid.get_table(), transformer, hier, matrices,
@@ -281,6 +299,8 @@ protected:
       solver::setup_poisson(N_elements, min, max, pde->poisson_diag,
                             pde->poisson_off_diag);
     }
+    if (poisson_solver)
+      poisson_solver->update_level(pde->get_dimensions()[0].get_level());
 
     pde->E_field.resize(quad_dense_size);
     pde->phi.resize(quad_dense_size);
@@ -321,6 +341,10 @@ private:
   mutable std::optional<matrix_factor<precision>> op_matrix;
   // moments of the field
   mutable std::vector<moment<precision>> moments;
+  // moments, new implementation
+  mutable std::optional<moments1d<precision>> moms1d;
+  // poisson solver data
+  mutable std::optional<solver::poisson_data<precision>> poisson_solver;
 
   // constantly changing
   std::vector<precision> state;

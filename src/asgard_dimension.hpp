@@ -19,8 +19,14 @@ static constexpr double const PI = 3.141592653589793;
 template<typename P>
 using scalar_func = std::function<P(P const)>;
 
+// signature g_func(x, t), may ignore time
 template<typename P>
 using g_func_type = std::function<P(P const, P const)>;
+
+// uses field-feedback, e.g., g_func_f(x, t, E_field_at_x_t)
+template<typename P>
+using g_func_f_type = std::function<P(P const, P const, P const)>;
+
 
 template<typename P>
 struct dimension
@@ -49,6 +55,7 @@ struct dimension
         initial_condition(std::move(initial_condition_in)),
         volume_jacobian_dV(volume_jacobian_dV_in), name(name_in)
   {
+    expect(domain_min < domain_max);
     set_level(level);
     set_degree(degree);
 

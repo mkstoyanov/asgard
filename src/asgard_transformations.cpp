@@ -66,39 +66,18 @@ gen_realspace_nodes(int const degree, int const level, P const min, P const max,
                     quadrature_mode const quad_mode)
 {
   int const n      = fm::ipow2(level);
-  P const h        = (max - min) / n;
+  P const dx       = (max - min) / n;
   auto const lgwt  = legendre_weights<P>(degree, -1.0, 1.0, quad_mode);
-  auto const roots = lgwt[0];
+
+  auto const &roots = lgwt[0];
 
   unsigned int const dof = roots.size();
 
-  // TODO: refactor this whole function.. it does a lot of unnecessary things
-  int const mat_dims =
-      quad_mode == quadrature_mode::use_degree ? (degree + 1) * n : dof * n;
-  fk::vector<P> nodes(mat_dims);
+  fk::vector<P> nodes(n * dof);
   for (int i = 0; i < n; i++)
   {
-    auto p_val = legendre<P>(roots, degree, legendre_normalization::lin);
-
-    p_val[0] = p_val[0] * sqrt(1.0 / h);
-
-    std::vector<P> xi(dof);
     for (std::size_t j = 0; j < dof; j++)
-    {
-      xi[j] = (0.5 * (roots(j) + 1.0) + i) * h + min;
-    }
-
-    std::vector<int> Iu(dof);
-    for (std::size_t j = 0; j < dof; j++)
-    {
-      Iu[j] = dof * i + j;
-    }
-
-    for (std::size_t j = 0; j < dof; j++)
-    {
-      expect(j <= Iu.size());
-      nodes(Iu[j]) = xi[j];
-    }
+      nodes(dof * i + j) = (0.5 * (roots(j) + 1.0) + i) * dx + min;
   }
 
   return nodes;
@@ -282,6 +261,93 @@ mass_matrix<P> hierarchy_manipulator<P>::make_mass(int dim, int level) const
 }
 
 template<typename P>
+void hierarchy_manipulator<P>::reconstruct1d(
+    int const nbatch, int const level, span2d<P> data) const
+{
+  expect(data.num_strips() == nbatch * fm::ipow2(level));
+  expect(data.stride() == (degree_ + 1));
+
+  if (level == 0)
+    return; // the hierarchical form is just scaled/normalized
+
+  stage0.resize(data.stride() * data.num_strips());
+  stage1.resize(stage0.size());
+
+  switch (degree_)
+  {
+    case 0:
+      reconstruct1d<0>(nbatch, level, data);
+      break;
+    case 1:
+      reconstruct1d<1>(nbatch, level, data);
+      break;
+    default:
+      reconstruct1d<-1>(nbatch, level, data);
+      break;
+  }
+}
+
+template<typename P>
+template<int tdegree>
+void hierarchy_manipulator<P>::reconstruct1d(
+    int const nbatch, int level, span2d<P> data) const
+{
+  int const ssize = (degree_ + 1); // strip size
+  P constexpr s22 = 0.5 * s2;
+  P constexpr is2h = 0.5 * is2;
+  P constexpr is64  = s6 / 4.0;
+
+  auto prj1 = [&](P const left[], P const right[], P out_left[], P out_right[])
+  {
+    for (int b : indexof<int>(nbatch))
+    {
+      switch (tdegree)
+      {
+        case 0:
+          out_left[b]  = s22 * left[b] - s22 * right[b];
+          out_right[b] = s22 * left[b] + s22 * right[b];
+          break;
+        case 1:
+          out_left[2*b]   = is2 * left[2*b] - is64 * left[2*b+1] +                    is2h * right[2*b+1];
+          out_left[2*b+1] =                   is2h * left[2*b+1] - is2 * right[2*b] + is64 * right[2*b+1];
+
+          out_right[2*b]   = is2 * left[2*b] + is64 * left[2*b+1]                    - is2h * right[2*b+1];
+          out_right[2*b+1] =                 + is2h * left[2*b+1] + is2 * right[2*b] + is64 * right[2*b+1];
+          break;
+        default:
+          smmat::gemtv(ssize, pmatup, left + b * ssize, out_left + b * ssize);
+          smmat::gemtv1(ssize, pmatlev, right + b * ssize, out_left + b * ssize);
+          smmat::gemtv(ssize, pmatup + ssize * ssize, left + b * ssize, out_right + b * ssize);
+          smmat::gemtv1(ssize, pmatlev + ssize * ssize, right + b * ssize, out_right + b * ssize);
+          break;
+      };
+    }
+  };
+
+  span2d<P> work0(data.stride(), data.num_strips(), stage0.data());
+  span2d<P> work1(data.stride(), data.num_strips(), stage1.data());
+
+  prj1(data[0], data[nbatch], work0[0], work0[nbatch]);
+  --level;
+
+  int num = 2;
+
+  while (level > 0)
+  {
+#pragma omp parallel for
+    for (int i = 0; i < num; i++)
+      prj1(work0[i * nbatch], data[(num + i) * nbatch],
+           work1[2 * i * nbatch], work1[(2 * i + 1) * nbatch]);
+    std::swap(work0, work1);
+    num *= 2;
+    --level;
+  }
+
+  std::copy_n(work0[0], data.num_strips() * ssize, data[0]);
+}
+
+template<typename P>
+template<bool skip_hierarchy>
 void hierarchy_manipulator<P>::project1d(int d, int level, P const dsize, level_mass_matrces<P> const &mass) const
 {
   int const num_cells = fm::ipow2(level);
@@ -293,7 +359,8 @@ void hierarchy_manipulator<P>::project1d(int d, int level, P const dsize, level_
 
   stage0.resize(pdof * num_cells);
 
-  P const scale = 0.5 * std::pow(is2, level - 1) * std::sqrt(dsize);
+  // doing the hierarchical projection, we must normalize the Legendre polynomial to unit l-2 norm
+  P const scale = std::pow(is2, level + 1) * std::sqrt(dsize);
 
 #pragma omp parallel for
   for (int i = 0; i < num_cells; i++)
@@ -305,6 +372,9 @@ void hierarchy_manipulator<P>::project1d(int d, int level, P const dsize, level_
 
   if (mass.has_level(level))
     invert_mass(pdof, mass[level], stage0.data());
+
+  if constexpr (skip_hierarchy)
+    return;
 
   pf[d].resize(pdof * num_cells);
 
@@ -1061,6 +1131,15 @@ void hierarchy_manipulator<P>::setup_projection_matrices()
 #ifdef ASGARD_ENABLE_DOUBLE
 template class hierarchy_manipulator<double>;
 
+template void hierarchy_manipulator<double>::project1d<true>(
+    int, int, double, level_mass_matrces<double> const &) const;
+template void hierarchy_manipulator<double>::project1d<false>(
+    int, int, double, level_mass_matrces<double> const &) const;
+
+template void hierarchy_manipulator<double>::projectlevels<0>(int, int) const;
+template void hierarchy_manipulator<double>::projectlevels<1>(int, int) const;
+template void hierarchy_manipulator<double>::projectlevels<-1>(int, int) const;
+
 template std::vector<fk::matrix<double>> gen_realspace_transform(
     PDE<double> const &pde,
     basis::wavelet_transform<double, resource::host> const &transformer,
@@ -1097,6 +1176,15 @@ combine_dimensions<double>(int const, elements::table const &, int const,
 
 #ifdef ASGARD_ENABLE_FLOAT
 template class hierarchy_manipulator<float>;
+
+template void hierarchy_manipulator<float>::project1d<true>(
+    int, int, float, level_mass_matrces<float> const &) const;
+template void hierarchy_manipulator<float>::project1d<false>(
+    int, int, float, level_mass_matrces<float> const &) const;
+
+template void hierarchy_manipulator<float>::projectlevels<0>(int, int) const;
+template void hierarchy_manipulator<float>::projectlevels<1>(int, int) const;
+template void hierarchy_manipulator<float>::projectlevels<-1>(int, int) const;
 
 template std::vector<fk::matrix<float>> gen_realspace_transform(
     PDE<float> const &pde,

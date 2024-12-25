@@ -399,9 +399,6 @@ struct prog_opts
   //! number of fixed time steps to take
   std::optional<int> num_time_steps;
 
-  //! enable/disable the Poisson solver
-  std::optional<bool> set_electric;
-
   //! output frequency of wavelet data used for restarts or python plotting
   std::optional<int> wavelet_output_freq;
 
@@ -485,15 +482,15 @@ struct prog_opts
 
   //! reads and returns a file_value, skips the optional but throws if the value is missing
   template<typename out_type>
-  out_type file_required(std::string_view const &s) const 
+  out_type file_required(std::string_view const &s) const
   {
     std::optional<out_type> x = file_value<out_type>(s);
     if (infile.empty())
-      throw std::runtime_error(std::string("missing an input file with required entry '") 
+      throw std::runtime_error(std::string("missing an input file with required entry '")
                                + std::string(s) + std::string("'"));
     if (not x)
-      throw std::runtime_error(std::string("file '") + std::string(infile) 
-                               + std::string("' is missing required entry '") 
+      throw std::runtime_error(std::string("file '") + std::string(infile)
+                               + std::string("' is missing required entry '")
                                + std::string(s) + std::string("'"));
     return x.value();
   }
@@ -527,8 +524,8 @@ private:
     grid_mode,
     step_method,
     adapt_norm,
-    set_electric,
     adapt_threshold,
+    no_adapt,
     start_levels,
     max_levels,
     degree,

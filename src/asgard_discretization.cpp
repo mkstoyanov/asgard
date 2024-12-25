@@ -64,6 +64,24 @@ discretization_manager<precision>::discretization_manager(
   if (high_verbosity())
     node_out() << "  generating: coefficient matrices..." << '\n';
 
+  if (pde->do_poisson_solve())
+  {
+    auto const &dim = pde->get_dimensions()[0];
+    poisson_solver.emplace(degree_, dim.domain_min, dim.domain_max, dim.get_level());
+
+    matrices.edata.electric_field.resize(fm::ipow2(dim.get_level()));
+
+    moms1d = moments1d<precision>(1, degree_, pde->max_level(), pde->get_dimensions());
+
+    // if the inf-nrm is needed, initialize with a dummy value
+    for (int d : indexof<int>(pde->num_dims()))
+      for (int t : indexof<int>(pde->num_terms()))
+        if (pde->get_terms()[t][d].has_dependence(pterm_dependence::electric_field_infnrm)) {
+          matrices.edata.electric_field_infnrm = precision{0};
+          break;
+        }
+  }
+
   this->compute_coefficients();
 
   auto const msg = grid.get_subgrid(get_rank());
@@ -334,6 +352,31 @@ void discretization_manager<precision>::ode_sv(imex_flag imflag,
     break;
   };
 }
+
+template<typename precision> void
+discretization_manager<precision>::do_poisson_update(std::vector<precision> const &field) const {
+  if (not poisson_solver)
+    return; // nothing to update, no term has Poisson dependence
+
+  auto const &table = grid.get_table();
+  expect(field.size() == static_cast<size_t>(table.size() * fm::ipow(degree_ + 1, pde->num_dims())));
+
+  int const level = pde->get_dimensions()[0].get_level();
+  std::vector<precision> moment0;
+  moms1d->project_moment(0, level, field, table, moment0);
+
+  hier.reconstruct1d(1, level, span2d<precision>(degree_ + 1, fm::ipow2(level), moment0.data()));
+
+  poisson_solver->solve_periodic(moment0, matrices.edata.electric_field);
+
+  if (matrices.edata.electric_field_infnrm)
+  {
+    precision emax = 0;
+    for (auto e : matrices.edata.electric_field)
+      emax = std::max(emax, std::abs(e));
+    matrices.edata.electric_field_infnrm = emax;
+  }
+};
 
 template<typename precision>
 void discretization_manager<precision>::save_snapshot(std::filesystem::path const &filename) const
