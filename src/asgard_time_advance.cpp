@@ -356,12 +356,12 @@ imex_advance(discretization_manager<P> &disc,
                                        disc.get_cmatrices(), adaptive_grid);
 
   // Explicit step f_1s = f_0 + dt A f_0
-  tools::timer.start("explicit_1");
   fk::vector<P, mem_type::owner, imex_resrc> fx(f.size());
 
+  tools::timer.start("explicit_1");
   {
     tools::time_event kronm_(
-        "kronmult - explicit", operator_matrices.flops(imex_flag::imex_explicit));
+        "kronmult - explicit 1", operator_matrices.flops(imex_flag::imex_explicit));
     operator_matrices.template apply<imex_resrc>(imex_flag::imex_explicit, 1.0, f.data(), 0.0, fx.data());
   }
 
@@ -439,7 +439,6 @@ imex_advance(discretization_manager<P> &disc,
   // --------------------------------
   // Second Stage
   // --------------------------------
-  tools::timer.start("explicit_2");
   fm::copy(f_orig_dev, f); // f here is now f_0
 
 #ifdef ASGARD_USE_CUDA
@@ -458,10 +457,11 @@ imex_advance(discretization_manager<P> &disc,
   operator_matrices.reset_coefficients(imex_flag::imex_explicit, pde,
                                        disc.get_cmatrices(), adaptive_grid);
 
+  tools::timer.start("explicit_2");
   // Explicit step f_2s = 0.5*f_0 + 0.5*(f_1 + dt A f_1)
   {
     tools::time_event kronm_(
-        "kronmult - explicit", operator_matrices.flops(imex_flag::imex_explicit));
+        "kronmult - explicit 2", operator_matrices.flops(imex_flag::imex_explicit));
     operator_matrices.template apply<imex_resrc>(imex_flag::imex_explicit, 1.0, f_1.data(), 0.0, fx.data());
   }
 
@@ -579,8 +579,7 @@ void advance_time(discretization_manager<P> &manager, int64_t num_steps)
   {
     // take a time advance step
     auto const time           = manager.time();
-    const char *time_str      = "time_advance";
-    const std::string time_id = tools::timer.start(time_str);
+    const std::string time_id = tools::timer.start("time_advance");
 
     fk::vector<P> f_val = [&]()
         -> fk::vector<P> {
@@ -688,6 +687,7 @@ void advance_time(discretization_manager<P> &manager, int64_t num_steps)
 
     if (manager.high_verbosity() and not pde.options().ignore_exact)
     {
+      auto session = tools::time_session("compute exact solution");
       auto rmse = manager.rmse_exact_sol();
       if (rmse)
       {

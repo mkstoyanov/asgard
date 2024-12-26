@@ -38,7 +38,8 @@ struct kron_operators
   }
 
   template<resource rec = resource::host>
-  void apply(imex_flag entry, precision alpha, precision const x[], precision beta, precision y[]) const
+  void apply(imex_flag entry, precision alpha, precision const x[],
+             precision beta, precision y[]) const
   {
     apply<rec>(entry, 0, alpha, x, beta, y);
   }
@@ -203,15 +204,19 @@ struct kron_operators
   {}
 
   template<resource rec = resource::host>
-  void apply(imex_flag entry, precision alpha, precision const x[], precision beta, precision y[]) const
+  void apply(imex_flag entry, precision alpha, precision const x[],
+             precision beta, precision y[]) const
   {
     apply<rec>(entry, precision{0}, alpha, x, beta, y);
   }
 
   //! \brief Apply the given matrix entry
   template<resource rec = resource::host>
-  void apply(imex_flag entry, precision time, precision alpha, precision const x[], precision beta, precision y[]) const
+  void apply(imex_flag entry, precision time, precision alpha, precision const x[],
+             precision beta, precision y[]) const
   {
+    auto const &terms = term_groups_[static_cast<int>(entry)];
+
     // prep stage for the operator application
     // apply the beta parameter, all operations are incremental
     if (beta == 0)
@@ -220,10 +225,9 @@ struct kron_operators
       lib_dispatch::scal<resource::host>(kglobal.num_active(), beta, y, 1);
 
     // if any work will be done, copy x into the padded workspace
-    if (kglobal.is_active(entry) or interp)
-      std::copy_n(x, kglobal.num_active(), workspace.x.begin());
+    std::copy_n(x, kglobal.num_active(), workspace.x.begin());
 
-    kglobal.template apply<rec>(entry, alpha, y);
+    kglobal.template apply<rec>(*tcoeffs, terms, alpha, y);
 
     if (interp)
     {
@@ -249,7 +253,7 @@ struct kron_operators
 
   int64_t flops(imex_flag entry) const
   {
-    return kglobal.flops(entry);
+    return kglobal.flops(entry, term_groups_);
   }
 
   //! \brief Make the matrix for the given entry
@@ -257,49 +261,60 @@ struct kron_operators
             coefficient_matrices<precision> &cmats,
             adapt::distributed_grid<precision> const &grid)
   {
-    if (pde_ == nullptr and pde.has_interp())
+    tools::time_event timing("make kron-operators");
+    tcoeffs = &cmats.term_coeffs;
+    if (pde_ == nullptr)
     {
-      pde.get_domain_bounds(dmin, dslope);
-      domain_scale = precision{1};
-      for (int d = 0; d < pde.num_dims(); d++)
-      {
-        dslope[d] -= dmin[d];
-        domain_scale *= dslope[d];
-      }
-      domain_scale = precision{1} / std::sqrt(domain_scale);
-
       pde_   = &pde;
-      interp = interpolation(pde_->num_dims(), conn_->get(connect_1d::hierarchy::volume), &workspace);
+      for (auto im : {imex_flag::unspecified, imex_flag::imex_explicit, imex_flag::imex_implicit})
+        term_groups_[static_cast<int>(im)] = get_used_terms(pde, im);
+
+      if (pde.has_interp())
+      {
+        pde.get_domain_bounds(dmin, dslope);
+        domain_scale = precision{1};
+        for (int d = 0; d < pde.num_dims(); d++)
+        {
+          dslope[d] -= dmin[d];
+          domain_scale *= dslope[d];
+        }
+        domain_scale = precision{1} / std::sqrt(domain_scale);
+
+
+        interp = interpolation(pde_->num_dims(), conn_->get(connect_1d::hierarchy::volume), &workspace);
+      }
     }
     if (not kglobal)
     {
       kglobal = make_block_global_kron_matrix(
           pde, grid, conn_->get(connect_1d::hierarchy::volume),
           conn_->get(connect_1d::hierarchy::full), &workspace, verbosity);
-      set_specific_mode(pde, cmats, *conn_, grid, entry, kglobal);
       if (interp)
       {
         finterp.resize(workspace.x.size());
         inodes.clear();
       }
     }
-    else if (not kglobal.specific_is_set(entry))
-      set_specific_mode(pde, cmats, *conn_, grid, entry, kglobal);
+
+    // rebuild the preconditioner
+    if (entry == imex_flag::imex_implicit or pde.use_implicit())
+    {
+      int const imex_indx = static_cast<int>(entry);
+      build_preconditioner(pde, cmats, *conn_, grid,
+                           term_groups_[imex_indx], kglobal.pre_con_);
+    }
   }
 
   /*!
    * \brief Either makes the matrix or if it exists, just updates only the
    *        coefficients
+   *
+   * TODO: remove this method once the local-mode no longer needs this.
    */
-  void reset_coefficients(imex_flag entry, PDE<precision> const &pde,
-                          coefficient_matrices<precision> &cmats,
-                          adapt::distributed_grid<precision> const &grid)
-  {
-    if (not kglobal)
-      make(entry, pde, cmats, grid);
-    else
-      set_specific_mode(pde, cmats, *conn_, grid, entry, kglobal);
-  }
+  void reset_coefficients(imex_flag, PDE<precision> const &,
+                          coefficient_matrices<precision> &,
+                          adapt::distributed_grid<precision> const &)
+  {}
 
   //! \brief Clear all matrices
   void clear()
@@ -382,6 +397,9 @@ private:
   precision domain_scale;
   std::array<precision, max_num_dimensions> dmin, dslope;
   connection_patterns const *conn_ = nullptr;
+
+  std::array<std::vector<int>, 3> term_groups_;
+  std::vector<block_sparse_matrix<precision>> const *tcoeffs = nullptr;
 
   block_global_kron_matrix<precision> kglobal;
 

@@ -253,13 +253,19 @@ protected:
   //! update components on grid reset
   void update_grid_components()
   {
+    tools::time_event performance("update grid components");
     kronops.clear();
     generate_coefficients(*pde, matrices, conn, hier, time_, coeff_update_mode::independent);
-#ifndef KRON_MODE_GLOBAL
+
+#ifdef KRON_MODE_GLOBAL
+    // the imex-flag is not used internally
+    kronops.make(imex_flag::unspecified, *pde, matrices, grid);
+#else
     pde->coeffs_.resize(pde->num_terms() * pde->num_dims());
     for (int64_t t : indexof(pde->coeffs_.size()))
       pde->coeffs_[t] = matrices.term_coeffs[t].to_fk_matrix(degree_ + 1, conn);
 #endif
+
     auto const my_subgrid = grid.get_subgrid(get_rank());
     fixed_bc = boundary_conditions::make_unscaled_bc_parts(
         *pde, grid.get_table(), transformer, hier, matrices,
@@ -273,7 +279,7 @@ protected:
   //! rebuild the moments
   void reset_moments()
   {
-    tools::time_event performance("update_system");
+    tools::time_event performance("reset moments");
 
     int const level      = pde->get_dimensions()[0].get_level();
     precision const min  = pde->get_dimensions()[0].domain_min;
