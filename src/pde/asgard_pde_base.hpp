@@ -62,6 +62,10 @@ enum class pterm_dependence
   none, // nothing special, uses generic g-func
   electric_field, // depends on the electric field
   electric_field_infnrm, // depends on the max abs( electric_field )
+  moments_1by0, // mom1 / mom0
+  moments_1by0_neg, // - mom1 / mom0
+  moments_2by0, // mom2 / mom0
+  moments_2by0_neg, // - mom2 / mom0
 };
 
 template<coefficient_type>
@@ -180,6 +184,14 @@ public:
   {
     expect(depends_ != pterm_dependence::none);
     expect(coeff_type_ == coefficient_type::mass); // have not done the others yet
+    // if this depends on the electric-filed, there should be a g_func_f
+    expect(not (depends_ == pterm_dependence::electric_field and not g_func_f_));
+    expect(not (depends_ == pterm_dependence::electric_field_infnrm and not g_func_f_));
+    // gfuncs are not used for the moments_1by0 and moments_2by0
+    expect(not (depends_ == pterm_dependence::moments_1by0 and (g_func_f_ or lhs_mass_func_)));
+    expect(not (depends_ == pterm_dependence::moments_2by0 and (g_func_f_ or lhs_mass_func_)));
+    expect(not (depends_ == pterm_dependence::moments_1by0_neg and (g_func_f_ or lhs_mass_func_)));
+    expect(not (depends_ == pterm_dependence::moments_2by0_neg and (g_func_f_ or lhs_mass_func_)));
   }
 
   P get_flux_scale() const { return static_cast<P>(flux_); };
@@ -221,8 +233,16 @@ public:
 
   bool is_identity() const
   {
-    return (coeff_type_ == coefficient_type::mass and not g_func_ and not g_func_f_
-            and not lhs_mass_func_ and not dv_func_);
+    switch (depends_) {
+      case pterm_dependence::moments_1by0:
+      case pterm_dependence::moments_1by0_neg:
+      case pterm_dependence::moments_2by0:
+      case pterm_dependence::moments_2by0_neg:
+        return false;
+      default:
+        return (coeff_type_ == coefficient_type::mass and not g_func_ and not g_func_f_
+                and not lhs_mass_func_ and not dv_func_);
+    }
   }
 
   g_func_type<P> const &g_func() const { return g_func_; }
@@ -303,6 +323,23 @@ public:
        imex_flag const flag_in = imex_flag::unspecified)
       : time_dependent_(time_dependent_in), name_(name_in), flag_(flag_in),
         partial_terms_(partial_terms)
+  {}
+  term(bool const time_dependent_in, std::string const name_in,
+       partial_term<P> const &partial_terms,
+       imex_flag const flag_in = imex_flag::unspecified)
+      : time_dependent_(time_dependent_in), name_(name_in), flag_(flag_in),
+        partial_terms_({partial_terms, })
+  {}
+  term(std::string const name_in,
+       std::initializer_list<partial_term<P>> const partial_terms,
+       imex_flag const flag_in = imex_flag::unspecified)
+      : time_dependent_(false), name_(name_in), flag_(flag_in),
+        partial_terms_(partial_terms)
+  {}
+  term(std::string const name_in, partial_term<P> const &partial_terms,
+       imex_flag const flag_in = imex_flag::unspecified)
+      : time_dependent_(false), name_(name_in), flag_(flag_in),
+        partial_terms_({partial_terms, })
   {}
 
   std::vector<partial_term<P>> const &get_partial_terms() const
@@ -786,6 +823,7 @@ public:
     return exact_vector_funcs_.back().back()(dummy, time)[0];
   }
 
+  bool skip_old_moments = false; // TODO: remove this once all PDEs have transitioned
   moment_funcs<P> initial_moments;
 
   bool do_poisson_solve() const { // TODO: rename to poisson dependence
@@ -799,6 +837,22 @@ public:
   }
   bool do_collision_operator() const { return do_collision_operator_; }
   bool has_analytic_soln() const { return has_analytic_soln_; }
+
+  int required_moments() const
+  {
+    int num_moments = (this->do_poisson_solve()) ? 1 : 0;
+    for (auto const &terms_md : terms_) {
+      for (auto const &term1d : terms_md) {
+        if (term1d.has_dependence(pterm_dependence::moments_1by0)
+            or term1d.has_dependence(pterm_dependence::moments_1by0_neg))
+          num_moments = std::max(2, num_moments);
+        if (term1d.has_dependence(pterm_dependence::moments_2by0)
+            or term1d.has_dependence(pterm_dependence::moments_2by0_neg))
+          num_moments = std::max(3, num_moments);
+      }
+    }
+    return num_moments;
+  }
 
   // data for the Poisson-electric field
   fk::vector<P> poisson_diag;
@@ -961,21 +1015,18 @@ public:
   }
 #endif
 
-protected:
-  std::function<void(P t, std::vector<P> const &, std::vector<P> &)> interp_nox_;
-
-  std::function<void(P t, vector2d<P> const &, std::vector<P> const &, std::vector<P> &)> interp_x_;
-
-  std::function<void(vector2d<P> const &, std::vector<P> &)> interp_initial_;
-
-  std::function<void(P t, vector2d<P> const &, std::vector<P> &)> interp_exact_;
-
   // commonly used building blocks of g_funcs
   static P gfunc_pos1(P const, P const) {
     return P{1};
   }
   static P gfunc_neg1(P const, P const) {
     return P{-1};
+  }
+  static P gfunc_positive(P const v, P const) {
+    return std::max(P{0}, v);
+  }
+  static P gfunc_negative(P const v, P const) {
+    return std::min(P{0}, v);
   }
   static P gfunc_f_field(P const, P const, P const f) {
     return f;
@@ -986,6 +1037,15 @@ protected:
   static P gfunc_f_negative(P const, P const, P const f) {
     return std::min(P{0}, f);
   }
+
+protected:
+  std::function<void(P t, std::vector<P> const &, std::vector<P> &)> interp_nox_;
+
+  std::function<void(P t, vector2d<P> const &, std::vector<P> const &, std::vector<P> &)> interp_x_;
+
+  std::function<void(vector2d<P> const &, std::vector<P> &)> interp_initial_;
+
+  std::function<void(P t, vector2d<P> const &, std::vector<P> &)> interp_exact_;
 
 private:
   prog_opts options_;
@@ -1012,4 +1072,97 @@ private:
   kronmult_mode kmod_ = kronmult_mode::dense;
   int memory_limit_   = 0;
 };
+
+//! add the two-part Vlasov operator, periodic boundary
+template<typename P>
+inline void add_vlassov_1x1v(term_set<P> &terms)
+{
+  imex_flag constexpr imex = imex_flag::imex_explicit;
+
+  partial_term<P> ptDivU(
+      coefficient_type::div, PDE<P>::gfunc_neg1, nullptr, flux_type::upwind,
+      boundary_condition::periodic, boundary_condition::periodic);
+
+  partial_term<P> ptMassP(coefficient_type::mass, PDE<P>::gfunc_positive);
+
+  term<P> div_x_up("div_x_up", ptDivU, imex);
+
+  term<P> massP("mass_positive", ptMassP, imex);
+
+  partial_term<P> ptDivD(
+      coefficient_type::div, PDE<P>::gfunc_neg1, nullptr, flux_type::downwind,
+      boundary_condition::periodic, boundary_condition::periodic);
+
+  partial_term<P> ptMassN(coefficient_type::mass, PDE<P>::gfunc_negative);
+
+  term<P> div_x_down("div_x_down", ptDivD, imex);
+
+  term<P> massN("mass_negative", ptMassN, imex);
+
+  terms.push_back({div_x_up, massP});
+  terms.push_back({div_x_down, massN});
+}
+
+//! adds the LB collision operator to the term set
+template<typename P>
+inline void add_lenard_bernstein_collisions_1x1v(P const nu, term_set<P> &terms)
+{
+  std::function<P(P const, P const)> const_nu = [nnu = nu](P const, P const = 0)->P{ return nnu; };
+  std::function<P(P const, P const)> get_v = [](P const v, P const = 0)->P{ return v; };
+
+  bool constexpr time_depend = true;
+
+  imex_flag constexpr imex = imex_flag::imex_implicit;
+
+  // moment components of the collision operator, split into 4 parts
+  // (nu, div_v v) -> (mass_nu, divv)
+  // (-u_f, nu * div_v) -> (pt_mass_uf_neg, nu_divv)
+  // (-mom2/mom0, nu * div * grad) -> (pt_mass_ef, {pt_div_up, pt_nu_grad_down})
+  // (-u_f^2, nu * div * grad) -> ({pt_mass_uf, pt_mass_uf_neg}, {pt_div_up, pt_nu_grad_down})
+
+  partial_term<P> pt_mass_nu = partial_term<P>(coefficient_type::mass, const_nu);
+
+  partial_term<P> pt_divv = partial_term<P>(
+      coefficient_type::div, get_v, nullptr, flux_type::upwind,
+      boundary_condition::dirichlet, boundary_condition::dirichlet);
+
+  partial_term<P> pt_mass_uf(coefficient_type::mass, pterm_dependence::moments_1by0);
+
+  partial_term<P> pt_mass_uf_neg(coefficient_type::mass, pterm_dependence::moments_1by0_neg);
+
+  partial_term<P> pt_mass_ef(coefficient_type::mass, pterm_dependence::moments_2by0);
+
+  partial_term<P> pt_nu_divv(
+      coefficient_type::div, const_nu, nullptr, flux_type::central,
+      boundary_condition::dirichlet, boundary_condition::dirichlet);
+
+  partial_term<P> pt_div_up(
+      coefficient_type::div, nullptr, nullptr, flux_type::upwind,
+      boundary_condition::dirichlet, boundary_condition::dirichlet);
+
+  partial_term<P> pt_nu_grad_down(
+      coefficient_type::grad, const_nu, nullptr, flux_type::downwind,
+      boundary_condition::dirichlet, boundary_condition::dirichlet);
+
+  term<P> mass_nu("LB_mass_nu", {pt_mass_nu}, imex);
+
+  term<P> divv("LB_divv", {pt_divv}, imex);
+
+  term<P> mass_uf_neg = term<P>(time_depend, "LB_uf_neg", {pt_mass_uf_neg, }, imex);
+
+  term<P> mass_u2_neg(time_depend, "LB_u2_neg", {pt_mass_uf, pt_mass_uf_neg}, imex);
+
+  term<P> mass_ef(time_depend, "LB_mass_ef", {/* identity, */ pt_mass_ef, }, imex);
+
+  term<P> nu_divv("LB_vdiv", {pt_nu_divv,}, imex);
+
+  term<P> const nu_div_grad("LB_nu_div_grad", {pt_div_up, pt_nu_grad_down}, imex);
+
+  terms.push_back({mass_nu, divv});
+  terms.push_back({mass_uf_neg, nu_divv});
+  terms.push_back({mass_ef, nu_div_grad});
+  terms.push_back({mass_u2_neg, nu_div_grad});
+}
+
+
 } // namespace asgard
