@@ -75,7 +75,17 @@ public:
   discretization_manager(std::unique_ptr<PDE<precision>> &&pde_in,
                          verbosity_level vebosity = verbosity_level::quiet);
 
-  discretization_manager(discretization_manager &&) = default;
+  /*!
+   * \brief Preventing relocation
+   *
+   * Different components of the manager can hold aliases (pointer and refs)
+   * to other components, e.g., components shared between multiple other components
+   * such as scratch workspaces or common pde options.
+   * Relocating the manager can break all of those references, thus we explicitly
+   * forbid such operations.
+   * If "move" operations are needed, wrap the manger in a unique_ptr.
+   */
+  discretization_manager(discretization_manager &&) = delete;
 
   //! total degrees of freedom for the problem
   int64_t degrees_of_freedom() const
@@ -198,8 +208,6 @@ public:
   adapt::distributed_grid<precision> const &get_grid() const { return grid; }
 
 #ifndef __ASGARD_DOXYGEN_SKIP_INTERNAL
-  //! return the transformer
-  auto const &get_transformer() const { return transformer; }
   //! return the hierarchy_manipulator
   auto const &get_hiermanip() const { return hier; }
   //! return the fixed boundary conditions
@@ -211,8 +219,6 @@ public:
   kron_operators<precision> &get_kronops() const { return kronops; }
   //! return operator matrix for direct solves
   std::optional<matrix_factor<precision>> &get_op_matrix() const { return op_matrix; }
-  //! returns the moments
-  std::vector<moment<precision>> &get_moments() const { return moments; }
   //! returns the coefficient matrices
   coefficient_matrices<precision> &get_cmatrices() const { return matrices; }
   //! recomputes the moments given the state of interest
@@ -221,9 +227,11 @@ public:
       int const level = pde->get_dimensions().front().get_level();
       moms1d->project_moments(level, f, grid.get_table(), matrices.edata.moments);
       int const num_cells = fm::ipow2(level);
-      int const num_moms  = moms1d->num_mom();
+      int const num_outs  = moms1d->num_comp_mom();
+      // std::cout << " recomputing moments w. powers " << moms1d->num_mom()
+      //           << ", total moment vectors " << num_outs << "\n";
       hier.reconstruct1d(
-          num_moms, level, span2d<precision>((degree_ + 1), num_moms * num_cells,
+          num_outs, level, span2d<precision>((degree_ + 1), num_outs * num_cells,
                                              matrices.edata.moments.data()));
     }
   }
@@ -254,20 +262,6 @@ public:
                                       int64_t num_steps);
 #endif // __ASGARD_DOXYGEN_SKIP_INTERNAL
 
-  void comp_mats() const { // two stream, compare matrices
-    return;
-    // reference check for operator construction, helps find problems
-    auto ref = matrices.term_coeffs[8].to_full(conn);
-    auto com = matrices.term_coeffs[10].to_full(conn);
-    // precision err = std::max(err, ref.max_diff(com));
-
-    std::cout << "  -- ref -- \n";
-    ref.print(std::cout);
-    std::cout << "  -- comp -- \n";
-    com.print(std::cout);
-    std::cout << "  -- ---- -- \n";
-  }
-
 protected:
 #ifndef __ASGARD_DOXYGEN_SKIP_INTERNAL
   //! convenient check if we are using high verbosity level
@@ -292,49 +286,10 @@ protected:
 
     auto const my_subgrid = grid.get_subgrid(get_rank());
     fixed_bc = boundary_conditions::make_unscaled_bc_parts(
-        *pde, grid.get_table(), transformer, hier, matrices,
+        *pde, grid.get_table(), hier, matrices,
         conn, my_subgrid.row_start, my_subgrid.row_stop);
     if (op_matrix)
       op_matrix.reset();
-    if (not moments.empty()
-        and pde->options().step_method.value() == time_advance::method::imex)
-      reset_moments();
-  }
-  //! rebuild the moments
-  void reset_moments()
-  {
-    tools::time_event performance("reset moments");
-
-    int const level      = pde->get_dimensions()[0].get_level();
-    precision const min  = pde->get_dimensions()[0].domain_min;
-    precision const max  = pde->get_dimensions()[0].domain_max;
-    int const N_elements = fm::ipow2(level);
-
-    int const quad_dense_size = dense_dim_size(ASGARD_NUM_QUADRATURE - 1, level);
-
-    for (auto &m : moments)
-    {
-      m.createFlist(*pde);
-      expect(m.get_fList().size() > 0);
-
-      m.createMomentVector(*pde, grid.get_table());
-      expect(m.get_vector().size() > 0);
-
-      m.createMomentReducedMatrix(*pde, grid.get_table());
-    }
-
-    if (pde->do_poisson_solve())
-    {
-      // Setup poisson matrix initially
-      solver::setup_poisson(N_elements, min, max, pde->poisson_diag,
-                            pde->poisson_off_diag);
-    }
-    if (poisson_solver)
-      poisson_solver->update_level(pde->get_dimensions()[0].get_level());
-
-    pde->E_field.resize(quad_dense_size);
-    pde->phi.resize(quad_dense_size);
-    pde->E_source.resize(quad_dense_size);
   }
 #endif // __ASGARD_DOXYGEN_SKIP_INTERNAL
 
@@ -346,7 +301,6 @@ private:
 
   connection_patterns conn;
 
-  basis::wavelet_transform<precision, resource::host> transformer;
   hierarchy_manipulator<precision> hier; // new transformer
 
   // easy access variables, avoids jumping into pde->options()
@@ -369,8 +323,6 @@ private:
   mutable kron_operators<precision> kronops;
   // used for direct solvers
   mutable std::optional<matrix_factor<precision>> op_matrix;
-  // moments of the field
-  mutable std::vector<moment<precision>> moments;
   // moments, new implementation
   mutable std::optional<moments1d<precision>> moms1d;
   // poisson solver data

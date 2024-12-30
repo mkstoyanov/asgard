@@ -15,7 +15,7 @@ static constexpr resource sparse_resrc = resource::host;
  * \brief Holds information about the moments
  *
  * Initializes with a given number of moments over a specified domain,
- * this class can compute the moments and represent them via the non-hierachical
+ * this class can compute the moments and represent them via the non-hierarchical
  * Legendre basis functions.
  * The moments can then be used to construct operators.
  *
@@ -27,13 +27,13 @@ class moments1d {
 public:
   //! empty constructor, no moments
   moments1d() {}
-  //! constructor, prepares the given number of momemnts, for dgree and up to the max_level
+  //! constructor, prepares the given number of moments, for dgree and up to the max_level
   moments1d(int num_mom, int degree, int max_level, std::vector<dimension<P>> const &dims);
 
   /*!
    * \brief Given the solution state and table, compute the moments
    *
-   * The dim0_level is the current level of dimenison zero and will determine
+   * The dim0_level is the current level of dimension zero and will determine
    * the size of moments, but if any indexes are not present in the etable,
    * those will be filled with zeros.
    */
@@ -44,12 +44,16 @@ public:
    * \brief Given the solution state and table, compute only one moment
    *
    * Simpler version of project_moments() that avoids recomputing everything.
+   * Works up to moments with second power.
    */
   void project_moment(int const mom, int const dim0_level, std::vector<P> const &state,
                       elements::table const &etable, std::vector<P> &moment) const;
 
-  //! \brief Returns the number of loaded moments
+  //! \brief Returns the number of loaded moments, based on the power of v
   int num_mom() const { return num_mom_; }
+
+  //! \brief Returns the number of loaded moments, based on the dimension and power
+  int num_comp_mom() const { return 1 + (num_mom_ - 1) * (num_dims_ - 1); }
 
 protected:
   /*!
@@ -79,68 +83,14 @@ protected:
   static vector2d<int> get_cells(int num_dimensions, elements::table const &etable);
 
 private:
-  //! number of momemnts
+  //! number of moments
   int num_mom_ = 0;
   //! number of dimensions
   int num_dims_ = 0;
   //! the degree of the basis
   int degree_ = 0;
-  //! ingeral of the canonical basis, each index holds num_mom_ * (degree_ + 1) entries
+  //! integral of the canonical basis, each index holds num_mom_ * (degree_ + 1) entries
   std::array<vector2d<P>, max_num_dimensions> integ;
-};
-
-
-template<typename P>
-class moment
-{
-public:
-  moment(std::vector<md_func_type<P>> md_funcs_);
-  void createFlist(PDE<P> const &pde);
-  void createMomentVector(PDE<P> const &pde,
-                          elements::table const &hash_table);
-
-  std::vector<md_func_type<P>> const &get_md_funcs() const { return md_funcs; }
-  fk::vector<P> const &get_vector() const { return vector; }
-  std::vector<std::vector<fk::vector<P>>> const &get_fList() const
-  {
-    return fList;
-  }
-  fk::sparse<P, sparse_resrc> const &get_moment_matrix_dev() const
-  {
-    return sparse_mat;
-  }
-
-  void createMomentReducedMatrix(PDE<P> const &pde,
-                                 elements::table const &hash_table);
-
-  fk::vector<P> const &get_realspace_moment() const { return realspace; }
-  void set_realspace_moment(fk::vector<P> &&realspace_in)
-  {
-    realspace = std::move(realspace_in);
-  }
-
-  fk::vector<P> &create_realspace_moment(
-      PDE<P> const &pde_1d, fk::vector<P> &wave, elements::table const &table,
-      asgard::basis::wavelet_transform<P, resource::host> const &transformer,
-      std::array<fk::vector<P, mem_type::view, resource::host>, 2> &workspace);
-
-  fk::vector<P> &create_realspace_moment(
-      PDE<P> const &pde_1d,
-      fk::vector<P, mem_type::owner, resource::device> &wave,
-      elements::table const &table,
-      basis::wavelet_transform<P, resource::host> const &transformer,
-      std::array<fk::vector<P, mem_type::view, resource::host>, 2> &workspace);
-
-private:
-  template<int nvdim>
-  void createMomentReducedMatrix_nd(PDE<P> const &pde,
-                                    elements::table const &hash_table);
-
-  std::vector<md_func_type<P>> md_funcs;
-  std::vector<std::vector<fk::vector<P>>> fList;
-  fk::vector<P> vector;
-  fk::vector<P> realspace;
-  fk::sparse<P, sparse_resrc> sparse_mat;
 };
 
 } // namespace asgard
