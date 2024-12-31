@@ -18,8 +18,6 @@ class PDE_riemann_1x3v : public PDE<P>
 public:
   PDE_riemann_1x3v(prog_opts const &cli_input)
   {
-    this->skip_old_moments = true; // temp-hack
-
     term_set<P> terms = {terms_ex_1, terms_ex_2};
     add_lenard_bernstein_collisions_1x3v(nu, terms);
 
@@ -116,88 +114,33 @@ private:
 
   // Constant Explicit Identity term
 
-  inline static const partial_term<P> I_pterm_ex = partial_term<P>(
-      coefficient_type::mass, nullptr, nullptr, flux_type::central,
-      boundary_condition::periodic, boundary_condition::periodic);
-
-  inline static term<P> const I_ex =
-      term<P>(false, // time-dependent
-              "I",   // name
-              {I_pterm_ex}, imex_flag::imex_explicit);
+  inline static term<P> const I_ex{"I", pt_identity, imex_flag::imex_explicit};
 
   // Explicit Term 1
   // -v_x\cdot\grad_x f for v_x > 0
   //
-  static P e1_g1(P const x, P const time = 0)
-  {
-    ignore(x);
-    ignore(time);
-    return -1.0;
-  }
+  inline static const
+  partial_term<P> e1_pterm_x{pt_div_periodic, flux_type::upwind, PDE<P>::gfunc_neg1};
 
-  static P e1_g2(P const x, P const time = 0)
-  {
-    ignore(time);
-    return std::max(P{0.0}, x);
-  }
+  inline static const partial_term<P> e1_pterm_v{pt_mass, PDE<P>::gfunc_positive};
 
-  inline static const partial_term<P> e1_pterm_x = partial_term<P>(
-      coefficient_type::div, e1_g1, nullptr, flux_type::upwind,
-      boundary_condition::periodic, boundary_condition::periodic);
+  inline static term<P> const term_e1x{"E1_x", e1_pterm_x, imex_flag::imex_explicit};
+  inline static term<P> const term_e1v{"E1_v", e1_pterm_v, imex_flag::imex_explicit};
 
-  inline static const partial_term<P> e1_pterm_v = partial_term<P>(
-      coefficient_type::mass, e1_g2, nullptr, flux_type::central,
-      boundary_condition::periodic, boundary_condition::periodic);
-
-  inline static term<P> const term_e1x =
-      term<P>(false,  // time-dependent
-              "E1_x", // name
-              {e1_pterm_x}, imex_flag::imex_explicit);
-
-  inline static term<P> const term_e1v =
-      term<P>(false,  // time-dependent
-              "E1_v", // name
-              {e1_pterm_v}, imex_flag::imex_explicit);
-
-  inline static std::vector<term<P>> const terms_ex_1 = {term_e1x, term_e1v,
-                                                         I_ex, I_ex};
+  inline static std::vector<term<P>> const terms_ex_1{term_e1x, term_e1v, I_ex, I_ex};
 
   // Explicit Term 2
   // -v_x\cdot\grad_x f for v_x < 0
   //
-  static P e2_g1(P const x, P const time = 0)
-  {
-    ignore(x);
-    ignore(time);
-    return -1.0;
-  }
+  inline static const
+  partial_term<P> e2_pterm_x{pt_div_periodic, flux_type::downwind, PDE<P>::gfunc_neg1};
 
-  static P e2_g2(P const x, P const time = 0)
-  {
-    ignore(time);
-    return std::min(P{0.0}, x);
-  }
+  inline static const partial_term<P> e2_pterm_v{pt_mass, PDE<P>::gfunc_negative};
 
-  inline static const partial_term<P> e2_pterm_x = partial_term<P>(
-      coefficient_type::div, e2_g1, nullptr, flux_type::downwind,
-      boundary_condition::periodic, boundary_condition::periodic);
+  inline static term<P> const term_e2x{"E2_x", e2_pterm_x, imex_flag::imex_explicit};
+  inline static term<P> const term_e2v{"E2_v", e2_pterm_v, imex_flag::imex_explicit};
 
-  inline static const partial_term<P> e2_pterm_v = partial_term<P>(
-      coefficient_type::mass, e2_g2, nullptr, flux_type::central,
-      boundary_condition::periodic, boundary_condition::periodic);
-
-  inline static term<P> const term_e2x =
-      term<P>(false,  // time-dependent
-              "E2_x", // name
-              {e2_pterm_x}, imex_flag::imex_explicit);
-
-  inline static term<P> const term_e2v =
-      term<P>(false,  // time-dependent
-              "E2_v", // name
-              {e2_pterm_v}, imex_flag::imex_explicit);
-
-  inline static std::vector<term<P>> const terms_ex_2 = {term_e2x, term_e2v,
-                                                         I_ex, I_ex};
+  inline static std::vector<term<P>> const terms_ex_2{term_e2x, term_e2v, I_ex, I_ex};
 
   static fk::vector<P> exact_dim_x_0(fk::vector<P> const &x, P const t = 0)
   {

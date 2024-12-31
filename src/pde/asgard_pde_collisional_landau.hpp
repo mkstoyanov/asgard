@@ -16,8 +16,6 @@ class PDE_collisional_landau : public PDE<P>
 public:
   PDE_collisional_landau(prog_opts const &cli_input)
   {
-    this->skip_old_moments = true; // temp-hack
-
     term_set<P> terms;
 
     add_vlassov_1x1v(terms);
@@ -26,7 +24,7 @@ public:
 
     add_lenard_bernstein_collisions_1x1v(nu, terms);
 
-    partial_term<P> ptI(coefficient_type::mass);
+    partial_term<P> ptI{pt_identity};
 
     term<P> termI("identity", ptI, imex_flag::imex_implicit);
 
@@ -39,8 +37,7 @@ public:
 
     partial_term<P> pt_pen(
         coefficient_type::penalty, pen_func, nullptr, flux_type::upwind,
-        boundary_condition::neumann, boundary_condition::neumann,
-        homogeneity::homogeneous, homogeneity::homogeneous);
+        boundary_condition::free, boundary_condition::free);
 
     bool constexpr time_depend = true;
     term<P> term_pen(time_depend, "penalty", pt_pen, imex_flag::imex_implicit);
@@ -126,13 +123,9 @@ private:
     return std::max(P{0.0}, x);
   }
 
-  inline static const partial_term<P> e1_pterm_x = partial_term<P>(
-      coefficient_type::div, e1_g1, nullptr, flux_type::upwind,
-      boundary_condition::periodic, boundary_condition::periodic);
+  inline static const partial_term<P> e1_pterm_x{pt_div_periodic, flux_type::upwind, e1_g1};
 
-  inline static const partial_term<P> e1_pterm_v = partial_term<P>(
-      coefficient_type::mass, e1_g2, nullptr, flux_type::central,
-      boundary_condition::periodic, boundary_condition::periodic);
+  inline static const partial_term<P> e1_pterm_v{pt_mass, e1_g2};
 
   inline static term<P> const term_e1x =
       term<P>(false,  // time-dependent
@@ -162,18 +155,13 @@ private:
     return std::min(P{0.0}, x);
   }
 
-  inline static const partial_term<P> e2_pterm_x = partial_term<P>(
-      coefficient_type::div, e2_g1, nullptr, flux_type::downwind,
-      boundary_condition::periodic, boundary_condition::periodic);
-
-  inline static const partial_term<P> e2_pterm_v = partial_term<P>(
-      coefficient_type::mass, e2_g2, nullptr, flux_type::central,
-      boundary_condition::periodic, boundary_condition::periodic);
+  inline static const partial_term<P> e2_pterm_v{pt_mass, e2_g2};
 
   inline static term<P> const term_e2x =
       term<P>(false,  // time-dependent
               "E2_x", // name
-              {e2_pterm_x}, imex_flag::imex_explicit);
+              {pt_div_periodic, flux_type::downwind, e2_g1},
+              imex_flag::imex_explicit);
 
   inline static term<P> const term_e2v =
       term<P>(false,  // time-dependent
@@ -186,22 +174,17 @@ private:
   // Central Part of E\cdot\grad_v f
   //
 
-  inline static const partial_term<P> ptEmass = partial_term<P>(
-      coefficient_type::mass, pterm_dependence::electric_field, PDE<P>::gfunc_f_field);
+  inline static const partial_term<P> ptEmass{
+      pterm_dependence::electric_field, PDE<P>::gfunc_f_field};
   inline static term<P> const Emass =
-      term<P>(true, // time-dependent
-              "",   // name
-              {ptEmass, }, imex_flag::imex_explicit);
-
-  inline static const partial_term<P> pterm_div_v = partial_term<P>(
-      coefficient_type::div, PDE<P>::gfunc_neg1, nullptr, flux_type::central,
-      boundary_condition::dirichlet, boundary_condition::dirichlet,
-      homogeneity::homogeneous, homogeneity::homogeneous);
+      term<P>(true,    // time-dependent
+              "Emass", // name
+              ptEmass, imex_flag::imex_explicit);
 
   inline static term<P> const div_v =
-      term<P>(false, // time-dependent
-              "",    // name
-              {pterm_div_v}, imex_flag::imex_explicit);
+      term<P>("div_v",
+              {pt_div_dirichlet_zero, flux_type::central, PDE<P>::gfunc_neg1},
+              imex_flag::imex_explicit);
 
   inline static std::vector<term<P>> const terms_3 = {Emass, div_v};
 
@@ -218,15 +201,10 @@ private:
               "",   // name
               {ptEmassMaxAbsE}, imex_flag::imex_explicit);
 
-  inline static const partial_term<P> pterm_div_v_downwind = partial_term<P>(
-      coefficient_type::div, nullptr, nullptr, flux_type::upwind,
-      boundary_condition::dirichlet, boundary_condition::dirichlet,
-      homogeneity::homogeneous, homogeneity::homogeneous);
-
   inline static term<P> const div_v_downwind =
       term<P>(false, // time-dependent
               "",    // name
-              {pterm_div_v_downwind}, imex_flag::imex_explicit);
+              {pt_div_dirichlet_zero, flux_type::upwind}, imex_flag::imex_explicit);
 
   // Central Part Defined Above (div_v; can do this due to time independence)
 

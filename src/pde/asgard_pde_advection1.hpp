@@ -125,9 +125,7 @@ private:
 
       boundary_condition::dirichlet, // left boundary condition type ("D", "N",
                                      // "P")
-      boundary_condition::neumann,   // right boundary condition type,
-      homogeneity::inhomogeneous,    // left homogeneity
-      homogeneity::homogeneous,      // right homogeneity
+      boundary_condition::free,      // right boundary condition type,
       {bc_func},                     // left boundary condition function list
       bc_time_func,                  // left boundary time function
       {},                            // right boundary condition function list

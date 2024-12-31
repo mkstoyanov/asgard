@@ -812,8 +812,6 @@ TEMPLATE_TEST_CASE("IMEX time advance - landau", "[imex]", test_precs)
     TestType E_relative = std::fabs((E_pot + E_kin) - E_total);
     REQUIRE(E_relative <= tolerance);
   }
-
-  parameter_manager<TestType>::get_instance().reset();
 }
 
 #ifdef ASGARD_ENABLE_DOUBLE
@@ -900,8 +898,6 @@ TEMPLATE_TEST_CASE("IMEX time advance - twostream", "[imex]", double)
       REQUIRE(E_relative >= tolerance);
     }
   }
-
-  parameter_manager<TestType>::get_instance().reset();
 }
 
 TEMPLATE_TEST_CASE("IMEX time advance - twostream - ASG", "[imex][adapt]",
@@ -1001,8 +997,6 @@ TEMPLATE_TEST_CASE("IMEX time advance - twostream - ASG", "[imex][adapt]",
     // adaptivity
     REQUIRE(static_cast<TestType>(disc.current_state().size()) / fg_dof <= 0.70);
   }
-
-  parameter_manager<TestType>::get_instance().reset();
 }
 #endif
 
@@ -1060,8 +1054,6 @@ TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x1v", "[imex]", test_precs)
         REQUIRE(l2 <= tolerance);
     }
   }
-
-  parameter_manager<TestType>::get_instance().reset();
 }
 
 TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x2v", "[!mayfail][imex]",
@@ -1078,8 +1070,6 @@ TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x2v", "[!mayfail][imex]",
   opts.start_levels = {0, 4, 4};
 
   auto const pde = make_PDE<TestType>(opts);
-
-  parameter_manager<TestType>::get_instance().reset();
 
   // TODO
   REQUIRE(true);
@@ -1100,8 +1090,6 @@ TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x3v", "[!mayfail][imex]",
 
   auto const pde = make_PDE<TestType>(opts);
 
-  parameter_manager<TestType>::get_instance().reset();
-
   // TODO
   REQUIRE(true);
 }
@@ -1119,7 +1107,7 @@ void test_memory_mode(imex_flag imex)
   // make some PDE, no need to be too specific
   verbosity_level verb = verbosity_level::quiet;
 
-  auto opts = make_opts("-p two_stream -d 2 -l 5");
+  auto opts = make_opts("-p two_stream -d 2 -l 5 -s expl");
 
   discretization_manager<prec> disc(make_PDE<prec>(opts));
 
@@ -1215,7 +1203,6 @@ void test_memory_mode(imex_flag imex)
   rmse_comparison(y_one, y_spone, prec{10});
   rmse_comparison(y_one, y_spmulti, prec{10});
 
-  parameter_manager<prec>::get_instance().reset();
 #ifdef ASGARD_USE_GPU_MEM_LIMIT
   cudaStreamDestroy(load_stream);
 #endif

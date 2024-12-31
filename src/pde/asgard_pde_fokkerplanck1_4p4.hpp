@@ -142,37 +142,23 @@ private:
   //
   // -E d/dz((1-z^2) f)
 
-  inline static partial_term<P> const partial_term_0 =
-      partial_term<P>(coefficient_type::div, g_func_t1_z, nullptr,
-                      flux_type::upwind, boundary_condition::dirichlet,
-                      boundary_condition::dirichlet, homogeneity::homogeneous,
-                      homogeneity::homogeneous, {}, nullptr, {}, nullptr, dV_z);
-
-  inline static term<P> const termE_z = term<P>(false,  // time-dependent
-                                                "d_dx", // name
-                                                {partial_term_0});
+  inline static term<P> const termE_z
+      = term<P>("d_dx", {pt_div_dirichlet_zero, flux_type::upwind,
+                         g_func_t1_z, nullptr, dV_z});
 
   inline static std::vector<term<P>> const termE = {termE_z};
 
   // term 2
   //
   // +C * d/dz( (1-z^2) df/dz )
-  inline static partial_term<P> const partial_term_1 =
-      partial_term<P>(coefficient_type::div, nullptr, nullptr,
-                      flux_type::upwind, boundary_condition::dirichlet,
-                      boundary_condition::dirichlet, homogeneity::homogeneous,
-                      homogeneity::homogeneous, {}, nullptr, {}, nullptr, dV_z);
+  inline static partial_term<P> const partial_term_1
+      {pt_div_dirichlet_zero, flux_type::upwind, nullptr, nullptr, dV_z};
 
-  inline static partial_term<P> const partial_term_2 =
-      partial_term<P>(coefficient_type::grad, nullptr, nullptr,
-                      flux_type::downwind, boundary_condition::neumann,
-                      boundary_condition::neumann, homogeneity::homogeneous,
-                      homogeneity::homogeneous, {}, nullptr, {}, nullptr, dV_z);
+  inline static const
+  partial_term<P> partial_term_2{pt_grad_free, flux_type::downwind, nullptr, nullptr, dV_z};
 
   inline static term<P> const termC_z =
-      term<P>(false,  // time-dependent
-              "d_dx", // name
-              {partial_term_1, partial_term_2});
+      term<P>("d_dx", {partial_term_1, partial_term_2});
 
   inline static std::vector<term<P>> const termC = {termC_z};
 
