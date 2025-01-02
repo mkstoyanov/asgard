@@ -162,6 +162,17 @@ TEST_CASE("new program options", "[single options]")
     REQUIRE_THROWS_WITH(prog_opts(vecstrview({"exe", "-dt", "dummy"})),
                         "invalid value for -dt, see exe -help");
   }
+  SECTION("-time")
+  {
+    prog_opts prog(vecstrview({"", "-time", "2.5"}));
+    REQUIRE(prog.stop_time);
+    REQUIRE(prog.stop_time.value() == 2.5);
+    REQUIRE(prog_opts(vecstrview({"exe", "-t", "0.1"})).stop_time);
+    REQUIRE_THROWS_WITH(prog_opts(vecstrview({"exe", "-time"})),
+                        "-time must be followed by a value, see exe -help");
+    REQUIRE_THROWS_WITH(prog_opts(vecstrview({"exe", "-t", "dummy"})),
+                        "invalid value for -t, see exe -help");
+  }
   SECTION("-adapt")
   {
     prog_opts prog(vecstrview({"", "-adapt", "0.5"}));

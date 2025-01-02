@@ -75,6 +75,10 @@ public:
   discretization_manager(std::unique_ptr<PDE<precision>> &&pde_in,
                          verbosity_level vebosity = verbosity_level::quiet);
 
+  //! take ownership of the pde object and discretize the pde
+  discretization_manager(PDEv2<precision> pde_in,
+                         verbosity_level vebosity = verbosity_level::quiet);
+
   /*!
    * \brief Preventing relocation
    *
@@ -96,6 +100,9 @@ public:
   //! returns the degree of the discretization
   int degree() const { return degree_; }
 
+  //! returns the time discretization parameters
+  time_data<precision> const &time_params() const { return dtime; }
+
   //! get the current time-step number
   int64_t time_step() const { return time_step_; }
 
@@ -103,6 +110,12 @@ public:
   precision dt() const { return dt_; }
   //! get the current integration time
   precision time() const { return time_; }
+  //! set the time in the befinning of the simulation, time() must be zero to call this
+  void set_time(precision t) {
+    if (dtime.step() != 0)
+      throw std::runtime_error("cannot reset the current time after the simulation start");
+    dtime.time() = t;
+  }
   //! get the currently set final time step
   int64_t final_time_step() const { return final_time_step_; }
 
@@ -207,7 +220,17 @@ public:
   //! returns a ref to the sparse grid
   adapt::distributed_grid<precision> const &get_grid() const { return grid; }
 
+  //! convenient check if we are using high verbosity level
+  bool high_verbosity() const { return (verb == verbosity_level::high); }
+
 #ifndef __ASGARD_DOXYGEN_SKIP_INTERNAL
+
+  PDEv2<precision> const &get_pde2() const { return pde2; }
+  time_data<precision> const &time_props() const { return dtime; }
+  bool version2() const { return not pde; }
+  void save_snapshot2(std::filesystem::path const &filename) const;
+  sparse_grid const &get_sgrid() const { return sgrid; }
+
   //! return the hierarchy_manipulator
   auto const &get_hiermanip() const { return hier; }
   //! return the fixed boundary conditions
@@ -260,12 +283,14 @@ public:
    */
   friend void advance_time<precision>(discretization_manager<precision> &disc,
                                       int64_t num_steps);
+
+  friend class h5writer<precision>;
 #endif // __ASGARD_DOXYGEN_SKIP_INTERNAL
 
 protected:
 #ifndef __ASGARD_DOXYGEN_SKIP_INTERNAL
-  //! convenient check if we are using high verbosity level
-  bool high_verbosity() const { return (verb == verbosity_level::high); }
+  //! sets the initial conditions, performs adaptivity in the process
+  void set_initial_condition_v1();
   //! sets the initial conditions, performs adaptivity in the process
   void set_initial_condition();
   //! update components on grid reset
@@ -291,13 +316,22 @@ protected:
     if (op_matrix)
       op_matrix.reset();
   }
+
+  //! start from time 0 and nothing has been set
+  void start_cold();
+  //! restart from a file
+  void restart_from_file();
+
 #endif // __ASGARD_DOXYGEN_SKIP_INTERNAL
 
 private:
   verbosity_level verb;
   std::unique_ptr<PDE<precision>> pde;
+  PDEv2<precision> pde2;
 
   adapt::distributed_grid<precision> grid;
+
+  sparse_grid sgrid;
 
   connection_patterns conn;
 
@@ -310,8 +344,10 @@ private:
   precision dt_;
   precision time_;
   int64_t time_step_;
-
   int64_t final_time_step_;
+
+  // time discretization (for version 2)
+  time_data<precision> dtime;
 
   // recompute only when the grid changes
   // left-right boundary conditions, time-independent components

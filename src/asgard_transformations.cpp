@@ -11,11 +11,10 @@ namespace asgard
 // combine components and create the portion of the multi-d vector associated
 // with the provided start and stop element bounds (inclusive)
 template<typename P>
-std::vector<P>
-combine_dimensions(int const degree, elements::table const &table,
-                   int const start_element, int const stop_element,
-                   std::vector<std::vector<P>> const &vectors,
-                   P const time_scale)
+void combine_dimensions(int const degree, elements::table const &table,
+                        int const start_element, int const stop_element,
+                        std::vector<std::vector<P>> const &vectors,
+                        P combined[])
 {
   int const num_dims = static_cast<int>(vectors.size());
   expect(num_dims > 0);
@@ -23,15 +22,9 @@ combine_dimensions(int const degree, elements::table const &table,
   expect(stop_element >= start_element);
   expect(stop_element < table.size());
 
-  int64_t const vector_size =
-      (stop_element - start_element + 1) * fm::ipow(degree + 1, vectors.size());
-
-  std::vector<P> combined(vector_size);
-
   int const pdof        = degree + 1;
   int64_t const mdblock = fm::ipow(pdof, num_dims);
 
-  P *r = combined.data();
   for (int cell = start_element; cell <= stop_element; cell++)
   {
     fk::vector<int> const coords = table.get_coords(cell);
@@ -43,19 +36,17 @@ combine_dimensions(int const degree, elements::table const &table,
     for (int64_t i : indexof(mdblock))
     {
       int64_t t = i;
-      r[i] = time_scale * vectors.back()[offset1d[num_dims - 1] + t % pdof];
+      combined[i] = vectors.back()[offset1d[num_dims - 1] + t % pdof];
       t /= pdof;
       for (int j = num_dims - 2; j >= 0; j--)
       {
-        r[i] *= vectors[j][offset1d[j] + t % pdof];
+        combined[i] *= vectors[j][offset1d[j] + t % pdof];
         t /= pdof;
       }
     }
 
-    r += mdblock;
+    combined += mdblock;
   }
-
-  return combined;
 }
 
 template<typename P>
@@ -976,9 +967,9 @@ template void hierarchy_manipulator<double>::projectlevels<0>(int, int) const;
 template void hierarchy_manipulator<double>::projectlevels<1>(int, int) const;
 template void hierarchy_manipulator<double>::projectlevels<-1>(int, int) const;
 
-template std::vector<double>
-combine_dimensions(int const, elements::table const &, int const, int const,
-                   std::vector<std::vector<double>> const &, double const = 1.0);
+template void combine_dimensions(
+  int const, elements::table const &, int const, int const,
+  std::vector<std::vector<double>> const &, double[]);
 #endif
 
 #ifdef ASGARD_ENABLE_FLOAT
@@ -993,9 +984,9 @@ template void hierarchy_manipulator<float>::projectlevels<0>(int, int) const;
 template void hierarchy_manipulator<float>::projectlevels<1>(int, int) const;
 template void hierarchy_manipulator<float>::projectlevels<-1>(int, int) const;
 
-template std::vector<float>
-combine_dimensions(int const, elements::table const &, int const, int const,
-                   std::vector<std::vector<float>> const &, float const = 1.0);
+template void combine_dimensions(
+  int const, elements::table const &, int const, int const,
+  std::vector<std::vector<float>> const &, float[]);
 #endif
 
 } // namespace asgard

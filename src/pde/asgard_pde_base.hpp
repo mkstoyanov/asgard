@@ -8,6 +8,15 @@
 
 namespace asgard
 {
+
+//! multi-dimensional function
+template<typename P>
+using md_func = std::function<void(P t, vector2d<P> const &, std::vector<P> &)>;
+//! multi-dimensional function with an additional field vector
+template<typename P>
+using md_func_f = std::function<void(P t, vector2d<P> const &,
+                                     std::vector<P> const &, std::vector<P> &)>;
+
 //
 // This file contains all of the interface and object definitions for our
 // representation of a PDE
@@ -90,6 +99,25 @@ enum class imex_flag
 };
 int constexpr num_imex_variants = 3;
 
+/*!
+ * \brief Indicates wither we need to recompute matrices based different conditions
+ *
+ * If a term has a fix coefficient, then there will not reason to update the matrices.
+ * On ther other end of the spectrum, terms that depend on the PDE solution, e.g.,
+ * the moments or the electric field, have to be recomputed on every stage of
+ * a time advance algorithm.
+ * The penalty terms have to be updated when the mesh discretization level changes.
+ */
+enum class update_on_change
+{
+  //! no need to update the operator matrices
+  none,
+  //! update on change in the discretization level and cell size
+  mesh_level,
+  //! assume we must always update on chnge in the time or the solution field
+  time
+};
+
 template<typename P>
 struct gmres_info
 {
@@ -158,6 +186,8 @@ constexpr type_tag_grad_free pt_grad_free{};
 struct type_tag_grad_dirichlet_zero {};
 constexpr type_tag_grad_dirichlet_zero pt_grad_dirichlet_zero{};
 
+struct type_tag_penalty {};
+constexpr type_tag_penalty pt_penalty{};
 
 template<typename P>
 class partial_term
@@ -171,6 +201,10 @@ public:
     return fx;
   }
 
+  //! equivalent to creating an identity term
+  partial_term() = default;
+
+  //! creates an identity partial term
   partial_term(type_tag_identity_term const &) : coeff_type_(coefficient_type::mass) {}
 
   partial_term(type_tag_mass_term const &,
@@ -286,7 +320,8 @@ public:
                g_func_type<P> const lhs_mass_func_in = nullptr,
                g_func_type<P> const dv_func_in       = nullptr)
 
-      : coeff_type_(coefficient_type::mass), depends_(depends_in), g_func_f_(g_func_f_in),
+      : coeff_type_(coefficient_type::mass), depends_(depends_in),
+        update_(update_on_change::time), g_func_f_(g_func_f_in),
         lhs_mass_func_(lhs_mass_func_in), dv_func_(dv_func_in)
   {
     expect(depends_ != pterm_dependence::none);
@@ -304,8 +339,8 @@ public:
 
   //! indicates mass term with coefficient mom_in.moment / moment0
   partial_term(mass_moment_over_density mom_in, g_func_type<P> const dv_func_in = nullptr)
-      : depends_(pterm_dependence::moment_divided_by_density), mom(mom_in.moment),
-        dv_func_(dv_func_in)
+      : depends_(pterm_dependence::moment_divided_by_density),
+        update_(update_on_change::time), mom(mom_in.moment), dv_func_(dv_func_in)
   {}
   //! indicates mass term with coefficient - mom_in.moment / moment0
   partial_term(mass_moment_over_density_neg mom_in, g_func_type<P> const dv_func_in = nullptr)
@@ -354,6 +389,8 @@ public:
   bool right_bc_zero() const { return right_bc_funcs_.empty(); };
 
   int mom_index() const { return mom; }
+
+  update_on_change update() const { return update_; }
 
   std::vector<vector_func<P>> const &left_bc_funcs() const
   {
@@ -413,6 +450,8 @@ private:
 
   pterm_dependence depends_ = pterm_dependence::none;
 
+  update_on_change update_ = update_on_change::none; // when do we recompute
+
   g_func_type<P> g_func_;
   g_func_f_type<P> g_func_f_;
   g_func_type<P> lhs_mass_func_;
@@ -433,6 +472,342 @@ private:
   scalar_func<P> left_bc_time_func_;
   scalar_func<P> right_bc_time_func_;
   g_func_type<P> dv_func_;
+};
+
+/*!
+ * \brief Chain containing one or more partial terms
+ *
+ * The operators in the chain will be multiplied together using small-matrix
+ * logic in a local cell-by-cell algorithm.
+ * Chains of partial terms are computationally more efficient than chains
+ * of multidimensional terms, but have more restrictions on the types
+ * of terms that can be chained:
+ * - div or grad partial term with central flux can only chain with a mass term
+ * - div or grad partial term with upwind/downwind flux can only chain with
+ *   grad or div with opposing downwind/upwind flux
+ * - a penalty partial_term is equivalent to div/grad with central flux
+ */
+template<typename P>
+class pterm_chain1d {
+public:
+  //! create a chain of a single identity term
+  pterm_chain1d() = default;
+  //! create a chain with a single partial term, not really a chain
+  pterm_chain1d(partial_term<P> pt)
+      : num_pterms_(1), update_(pt.update()), pterms_{std::move(pt), partial_term<P>{}}
+  {
+    if (pterms_[0].is_identity()) // didn't actually add a term
+      num_pterms_ = 0;
+  }
+  //! initialize chain from a list of terms
+  pterm_chain1d(std::initializer_list<partial_term<P>> pt_list)
+    : num_pterms_(0) // will reinit the value below
+  {
+    if (pt_list.size() > 2)
+      extra_pterms.reserve(pt_list.size() - 2);
+    for (auto ip = pt_list.begin(); ip < pt_list.end(); ++ip)
+    {
+      if (not ip->is_identity())
+      {
+        switch (num_pterms_)
+        {
+          case 0:
+            pterms_[0] = std::move(*ip);
+            break;
+          case 1:
+            pterms_[1] = std::move(*ip);
+            break;
+          default:
+            extra_pterms.emplace_back(std::move(*ip));
+            break;
+        }
+        num_pterms_ ++;
+      }
+    }
+
+    if (not check_sane())
+      throw std::runtime_error("incompatible flux combination used in a pterm_chain1d");
+
+    set_update();
+  }
+  //! initialize chain from a vector of terms
+  pterm_chain1d(std::vector<partial_term<P>> pt_list)
+    : num_pterms_(0) // will reinit the value below
+  {
+    if (pt_list.size() > 2)
+      extra_pterms.reserve(pt_list.size() - 2);
+    for (auto ip = pt_list.begin(); ip < pt_list.end(); ++ip)
+    {
+      if (not ip->is_identity())
+      {
+        switch (num_pterms_)
+        {
+          case 0:
+            pterms_[0] = std::move(*ip);
+            break;
+          case 1:
+            pterms_[1] = std::move(*ip);
+            break;
+          default:
+            extra_pterms.emplace_back(std::move(*ip));
+            break;
+        }
+        num_pterms_ ++;
+      }
+    }
+
+    if (not check_sane())
+      throw std::runtime_error("incompatible flux combination used in a pterm_chain1d");
+
+    set_update();
+  }
+
+  bool is_identity() const { return (num_pterms_ == 0); }
+
+  int num_pterms() const { return num_pterms_; }
+
+  partial_term<P> const & operator[] (int i)
+  {
+    return (i < 2) ? pterms_[i] : extra_pterms[i - 2];
+  }
+
+  update_on_change update() const { return update_; }
+
+private:
+  bool check_sane() {
+    int fluxdir = 2; // no flux direction found, two available
+    for (int i : iindexof(num_pterms())) {
+      partial_term<P> const &pt = (*this)[i];
+      // get the int-value of the flux, flip for grad
+      int const fdir = static_cast<int>(pt.flux())
+                      * ((pt.coeff_type() == coefficient_type::grad) ? -1 : 1);
+      switch (pt.coeff_type())
+      {
+        case coefficient_type::penalty:
+          if (fluxdir == 2) // have two flux dirs available
+            fluxdir = 0; // take both dirs
+          else
+            return false; // conflict, no flux-dirs left
+          break;
+        case coefficient_type::div:
+        case coefficient_type::grad:
+          // if the fdir direction is already taken, bad setup
+          if (fluxdir == 0 or fluxdir == fdir)
+            return false;
+          else if (fdir == 0) { // requested central flux, takes two dirs
+            if (fluxdir != 2) // one flux dir already used, bad
+              return false;
+            else
+              fluxdir = 0; // take all flux dirs
+          } else { // requested up/down flux, take one dir
+            if (fluxdir != 2) // one flux already used
+              fluxdir = 0; // ok, but no flux available anymore
+            else
+              fluxdir = fdir; // two available, take one flux direction
+          }
+        default: // mass term, nothing to do
+          break;
+      }
+    }
+    return true;
+  }
+
+  void set_update() {
+    for (int i : iindexof(num_pterms())) {
+      partial_term<P> const &pt = (*this)[i];
+      switch (update_) {
+        case update_on_change::none:
+          update_ = pt.update();
+          break;
+        case update_on_change::mesh_level:
+          if (pt.update() == update_on_change::time)
+            update_ = update_on_change::time;
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  //! set to zero if all terms are identity, otherwise counts all terms including identities
+  int num_pterms_   = 0;
+  //! indicates when the term matrices should be recomputed
+  update_on_change update_ = update_on_change::none;
+  // have no more than 2 terms in almost all cases
+  std::array<partial_term<P>, 2> pterms_;
+  std::vector<partial_term<P>> extra_pterms;
+};
+
+/*!
+ * \brief Multidimensional term of the partial differential equation
+ *
+ * The term can be one of three modes:
+ * - a separable term consisting of a number of one-dimensional chains, one per dimension
+ * - an interpolation term, possibly non-linear and non-separable
+ * - a chain of separable or interpolation terms
+ *
+ * Cannot create a separable term with all pterm_chain as identity.
+ * A chain can be build only of separable and interpolation terms, recursive chains
+ * are not allowed.
+ */
+template<typename P>
+class term_md
+{
+public:
+  //! indicates the mode of the multi-dimensional term
+  enum class mode { separable, interpolatory, chain };
+
+  //! 1d separable case
+  term_md(pterm_chain1d<P> chain)
+    : term_md({std::move(chain), })
+  {}
+  //! multi-dimensional separable case, using initializer list
+  term_md(std::initializer_list<pterm_chain1d<P>> clist)
+    : mode_(mode::separable), num_dims_(static_cast<int>(clist.size()))
+  {
+    int num_identity = 0;
+    expect(num_dims_ <= max_num_dimensions);
+    for (int i : iindexof(num_dims_)) {
+      sep[i] = std::move(*(clist.begin() + i));
+      if (sep[i].is_identity())
+        num_identity++;
+    }
+
+    if (num_identity == num_dims_)
+      throw std::runtime_error("cannot create term_md with all terms being identities");
+  }
+  //! multi-dimensional separable case, using std::vector
+  term_md(std::vector<pterm_chain1d<P>> clist)
+    : mode_(mode::separable), num_dims_(static_cast<int>(clist.size()))
+  {
+    int num_identity = 0;
+    expect(num_dims_ <= max_num_dimensions);
+    for (int i : iindexof(num_dims_)) {
+      sep[i] = std::move(*(clist.begin() + i));
+      if (sep[i].is_identity())
+        num_identity++;
+    }
+
+    if (num_identity == num_dims_)
+      throw std::runtime_error("cannot create term_md with all terms being identities");
+  }
+  //! list of multi-dimensional terms, from initializer list
+  term_md(std::initializer_list<term_md<P>> clist)
+    : mode_(mode::chain), chain_(std::move(clist))
+  {
+    // first pass, look for term with set dimensions and disallow recursive chaining
+    for (auto const &ch : chain_)
+    {
+      switch (ch.term_mode())
+      {
+        case mode::chain:
+          throw std::runtime_error("recursive chains (chain with chains) of term_md are not supported");
+          break;
+        case mode::separable:
+          num_dims_ = ch.num_dims();
+          break;
+        default: // work on interpolation later
+          break;
+      }
+    }
+
+    for (auto const &ch : chain_)
+    {
+      if (ch.term_mode() == mode::separable and ch.num_dims() != num_dims_)
+        throw std::runtime_error("inconsistent dimension of terms in the chain");
+    }
+  }
+  //! list of multi-dimensional terms, from std::vector
+  term_md(std::vector<term_md<P>> clist)
+    : mode_(mode::chain), chain_(std::move(clist))
+  {
+    // first pass, look for term with set dimensions and disallow recursive chaining
+    for (auto const &ch : chain_)
+    {
+      switch (ch.term_mode())
+      {
+        case mode::chain:
+          throw std::runtime_error("recursive chains (chain with chains) of term_md are not supported");
+          break;
+        case mode::separable:
+          num_dims_ = ch.num_dims();
+          break;
+        default: // work on interpolation later
+          break;
+      }
+    }
+
+    for (auto const &ch : chain_)
+    {
+      if (ch.term_mode() == mode::separable and ch.num_dims() != num_dims_)
+        throw std::runtime_error("inconsistent dimension of terms in the chain");
+    }
+  }
+
+  //! get the chain term with index i
+  pterm_chain1d<P> & dim(int i) {
+    expect(sep == mode::separable);
+    return chain_[i];
+  }
+  //! get the chain term with index i, const-overload
+  pterm_chain1d<P> const & dim(int i) const {
+    expect(mode_ == mode::separable);
+    return sep[i];
+  }
+
+  //! get the chain term with index i
+  term_md<P> & chain(int i) {
+    expect(mode_ == mode::chain);
+    return chain_[i];
+  }
+  //! get the chain term with index i, const-overload
+  term_md<P> const & chain(int i) const {
+    expect(mode_ == mode::chain);
+    return chain_[i];
+  }
+
+  //! indicate which mode is being used
+  mode term_mode() const { return mode_; }
+
+  //! separable case only, the number of dimensions
+  int num_dims() const { return num_dims_; }
+  //! (internal use) interpolation or chain mode only, set the number of dimensions
+  void set_num_dimensions(int dims) {
+    if (num_dims_ == dims)
+      return;
+
+    switch (mode_) {
+      case mode::separable:
+        throw std::runtime_error("wrong number of dimensions of separable term");
+      case mode::interpolatory:
+        num_dims_ = dims;
+        break;
+      default: // case mode::chain:
+        num_dims_ = dims;
+        for (auto &ch : chain_)
+        {
+          if (ch.term_mode() == mode::separable and ch.num_dims() != num_dims_)
+            throw std::runtime_error("wrong number of dimensions of separable term in a chain");
+          ch.set_num_dimensions(num_dims_);
+        }
+        break;
+    }
+  }
+  //! chain case only, the number of chained terms
+  int num_chain() const { return static_cast<int>(chain_.size()); }
+
+  //! mode for the imex time-stepping
+  imex_flag imex = imex_flag::unspecified;
+
+private:
+  mode mode_ = mode::interpolation;
+  // separable case
+  int num_dims_ = 0;
+  std::array<pterm_chain1d<P>, max_num_dimensions> sep;
+  // non-separable/interpolation case
+  md_func_f<P> interp_;
+  // chain of other terms
+  std::vector<term_md<P>> chain_;
 };
 
 template<typename P>
@@ -563,6 +938,8 @@ private:
   scalar_func<P> time_func_;
 };
 
+
+
 // ---------------------------------------------------------------------------
 //
 // abstract base class defining interface for PDEs
@@ -573,8 +950,6 @@ using term_set = std::vector<std::vector<term<P>>>;
 template<typename P>
 using dt_func = std::function<P(dimension<P> const &dim)>;
 
-// template<typename P>
-// using moment_funcs = std::vector<std::vector<md_func_type<P>>>;
 
 template<typename P>
 class PDE
@@ -1275,5 +1650,238 @@ inline void add_lenard_bernstein_collisions_1x3v(P const nu, term_set<P> &terms)
   terms.push_back({mass_theta, I, nu_div_grad, I});
   terms.push_back({mass_theta, I, I, nu_div_grad});
 }
+
+/*!
+ * \internal
+ * \brief holds data for the time-discretization
+ *
+ * Holds initial time, final time, time-step, etc.
+ *
+ * When remaining steps hits 0, current_time should be equal to the final_time,
+ * give or take some machine precision.
+ * Between time-step dt, final time and number of steps, can specify 2 of 3.
+ * \endinternal
+ */
+template<typename P>
+class time_data
+{
+public:
+  struct input_dt {
+    explicit input_dt(P v) : value(v) {}
+    P value;
+  };
+  struct input_stop_time {
+    explicit input_stop_time(P v) : value(v) {}
+    P value;
+  };
+  //! unset time-data, all entries are negative, must be set later
+  time_data() = default;
+  //! specify time-step and final time
+  time_data(time_advance::method smethod, input_dt dt, input_stop_time stop_time)
+      : smethod_(smethod), dt_(dt.value), stop_time_(stop_time.value),
+        time_(0), step_(0)
+  {
+    // assume we are doing at least 1 step and round down end_time / dt
+    num_remain_ = static_cast<int64_t>(stop_time_ / dt_);
+    if (num_remain_ == 0)
+      num_remain_ = 1;
+    // readjust dt to minimize rounding error
+    dt_ = stop_time_ / static_cast<P>(num_remain_);
+  }
+  //! specify number of steps and final time
+  time_data(time_advance::method smethod, int64_t num_steps, input_stop_time stop_time)
+    : smethod_(smethod), stop_time_(stop_time.value), time_(0), step_(0),
+      num_remain_(num_steps)
+  {
+    dt_ = stop_time_ / static_cast<P>(num_remain_);
+  }
+  //! specify time-step and number of steps
+  time_data(time_advance::method smethod, input_dt dt, int64_t num_steps)
+    : smethod_(smethod), dt_(dt.value), time_(0), step_(0),
+      num_remain_(num_steps)
+  {
+    stop_time_ = num_remain_ * dt_;
+  }
+
+  time_advance::method method() const { return smethod_; }
+
+  P dt() const { return dt_; }
+  P stop_time() const { return stop_time_; }
+  P time() const { return time_; }
+  P &time() { return time_; }
+  int64_t step() const { return step_; }
+  int64_t num_remain() const { return num_remain_; }
+
+  //! allows writer to save/load the time data
+  friend class h5writer<P>;
+
+private:
+  // cannot be negative, negative means "not-set"
+  time_advance::method smethod_ = time_advance::method::exp;
+  //! current time-step
+  P dt_ = -1;
+  //! currently set final time
+  P stop_time_ = -1;
+  //! current time for the simulation
+  P time_ = -1;
+  //! current number of steps taken
+  int64_t step_ = -1;
+  //! remaining steps
+  int64_t num_remain_ = -1;
+};
+
+/*!
+ * \brief Container for terms, sources, boundary conditions, etc.
+ */
+template<typename P>
+class PDEv2
+{
+public:
+  //! used for sanity/error checking
+  using precision_mode = P;
+
+  //! creates an empty pde
+  PDEv2() {}
+  //! initialize the pde over the domain
+  PDEv2(prog_opts opts, pde_domain<P> domain)
+    : options_(std::move(opts)), domain_(std::move(domain))
+  {
+    int const numd = domain_.num_dims();
+    if (domain_.num_dims() == 0)
+      throw std::runtime_error("the pde cannot be initialized with an empty domain");
+
+    if (options_.restarting()) {
+      // more error checking is done during the file reading process
+      if (not std::filesystem::exists(options_.restart_file))
+        throw std::runtime_error("Cannot find file: '" + options_.restart_file + "'");
+    } else {
+      // cold start, apply defaults and sanitize
+      if (options_.start_levels.empty()) {
+        if (options_.default_start_levels.empty())
+          throw std::runtime_error("must specify start levels for the grid");
+        else
+          options_.start_levels = options_.default_start_levels;
+      }
+
+      if (options_.start_levels.size() == 1) {
+        int const l = options_.start_levels.front(); // isotropic level
+        if (numd > 1)
+          options_.start_levels.resize(numd, l); // fill vector with l
+      } else {
+        if (numd != static_cast<int>(options_.start_levels.size()))
+          throw std::runtime_error("the starting levels must include either a single entry"
+                                   "indicating uniform/isotropic grid or one entry per dimension");
+      }
+
+      if (options_.max_levels.empty()) {
+        options_.max_levels = options_.start_levels; // if unspecified, use max for start
+      } else {
+        if (options_.max_levels.size() == 1) {
+          int const l = options_.max_levels.front(); // uniform max
+          if (numd > 1)
+            options_.max_levels.resize(numd, l); // fill vector with l
+        } else {
+          if (options_.max_levels.size() != options_.start_levels.size())
+            throw std::runtime_error("the max levels must include either a single entry"
+                                     "indicating uniform max or one entry per dimension");
+        }
+        // use the initial as max, if the max is less than the initial level
+        for (int d : iindexof(numd))
+          options_.max_levels[d] = std::max(options_.max_levels[d], options_.start_levels[d]);
+      }
+
+      max_level_ = *std::max_element(options_.max_levels.begin(), options_.max_levels.end());
+
+      if (not options_.degree) {
+        if (options_.default_degree)
+          options_.degree = options_.default_degree.value();
+        else
+          throw std::runtime_error("must provide a polynomial degree with -d or default_degree()");
+      }
+
+      if (options_.default_dt and not options_.dt)
+        options_.dt = options_.default_dt;
+
+      if (options_.default_stop_time and not options_.stop_time)
+        options_.stop_time = options_.default_stop_time;
+    }
+    // don't support l-inf norm yet
+    if (options_.adapt_threshold)
+      options_.anorm = adapt_norm::l2;
+  }
+
+  //! shortcut for the number of dimensions
+  int num_dims() const { return domain_.num_dims(); }
+  //! indicates whether the pde was initialized with a domain
+  operator bool () const { return (domain_.num_dims() > 0); }
+  //! return the max level that can be used by the grid
+  int max_level() const { return max_level_; }
+
+  //! returns the options, modded to normalize
+  prog_opts const &options() const { return options_; }
+  //! returns the domain loaded in the constructor
+  pde_domain<P> const &domain() const { return domain_; }
+
+  //! set non-separable initial condition, can have only one
+  void set_initial(md_func<P> ic_md) {
+    initial_md_ = std::move(ic_md);
+  }
+  //! add separable initial condition, can have multiple
+  void add_initial(separable_func<P> ic_md) {
+    initial_sep_.emplace_back(std::move(ic_md));
+  }
+  //! returns the separable initial conditions
+  std::vector<separable_func<P>> const &ic_sep() const { return initial_sep_; }
+  //! returns the non-separable initial condition
+  md_func<P> const &ic_md() const { return initial_md_; }
+
+  //! adding a term to the pde
+  PDEv2<P> & operator += (term_md<P> tmd) {
+    tmd.set_num_dimensions(domain_.num_dims());
+    terms_.emplace_back(std::move(tmd));
+    return *this;
+  }
+  //! adding a term to the pde
+  void add_term(term_md<P> tmd) {
+    tmd.set_num_dimensions(domain_.num_dims());
+    terms_.emplace_back(std::move(tmd));
+  }
+  //! returns the loaded terms
+  std::vector<term_md<P>> const &terms() const { return terms_; }
+
+  //! set non-separable right-hand-source, can have only one
+  void set_source(md_func<P> smd) {
+    sources_md_ = std::move(smd);
+  }
+  //! add separable right-hand-source, can have multiple
+  void add_source(separable_func<P> smd) {
+    sources_sep_.emplace_back(std::move(smd));
+  }
+  //! add separable right-hand-source, can have multiple
+  PDEv2<P> & operator += (separable_func<P> tmd) {
+    this->add_source(std::move(tmd));
+    return *this;
+  }
+  //! returns the separable sources
+  std::vector<separable_func<P>> const &source_sep() const { return sources_sep_; }
+  //! returns the non-separable source
+  md_func<P> const &source_md() const { return sources_md_; }
+
+  //! allows writer to save/load the pde and options
+  friend class h5writer<P>;
+
+private:
+  prog_opts options_;
+  pde_domain<P> domain_;
+  int max_level_ = 1;
+
+  md_func<P> initial_md_;
+  std::vector<separable_func<P>> initial_sep_;
+
+  std::vector<term_md<P>> terms_;
+
+  md_func<P> sources_md_;
+  std::vector<separable_func<P>> sources_sep_;
+};
 
 } // namespace asgard

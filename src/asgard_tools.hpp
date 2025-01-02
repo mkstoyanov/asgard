@@ -227,6 +227,34 @@ inline null_time_event time_session(std::string const &) {
 }
 #endif
 
+//! converts a number to a string with format 1,234,567
+inline std::string split_style(int64_t num) {
+  int64_t bound = 1000000000; // one billion
+  std::string s = "";
+  for (int i = 0; i < 4; i++) {
+    if (s != "")
+      s += ',';
+    int64_t x = (bound > 0) ? num / bound : num;
+    if (x >= 100) {
+      s += std::to_string(x);
+    } else if (x >= 10) {
+      if (s != "")
+        s += '0';
+      s += std::to_string(x);
+    } else if (x > 0) {
+      if (s != "")
+        s += "00";
+      s += std::to_string(x);
+    } else {
+      if (s != "")
+        s += "000";
+    }
+    num %= bound;
+    bound /= 1000;
+  }
+  return s;
+};
+
 } // namespace asgard::tools
 
 namespace asgard

@@ -6,6 +6,179 @@ static auto const pde_base_dir = gold_base_dir / "pde";
 
 using namespace asgard;
 
+TEMPLATE_TEST_CASE("pde book-keeping", "[pde]", test_precs)
+{
+  SECTION("pde_domain")
+  {
+    REQUIRE(pde_domain<TestType>(1).num_dims() == 1);
+    REQUIRE(pde_domain<TestType>(2).num_dims() == 2);
+    REQUIRE(pde_domain<TestType>(2).num_pos() == 0);
+    REQUIRE(pde_domain<TestType>(3).num_vel() == 0);
+    REQUIRE(pde_domain<TestType>(1).length(0) == TestType{1});
+    REQUIRE(pde_domain<TestType>(1).name(0) == std::string("x1"));
+    REQUIRE(pde_domain<TestType>(4).name(3) == std::string("x4"));
+
+    REQUIRE_THROWS_WITH(pde_domain<TestType>(-3),
+                        "pde_domain created with zero or negative dimensions");
+    REQUIRE_THROWS_WITH(pde_domain<TestType>(max_num_dimensions + 1),
+                        "pde_domain created with too many dimensions, max is 6D");
+
+    REQUIRE(pde_domain<TestType>({{0, 2}, {-2, 1}}).length(0) == TestType{2});
+    REQUIRE(pde_domain<TestType>({{0, 2}, {-2, 1}}).xleft(1) == TestType{-2});
+    REQUIRE(pde_domain<TestType>({{0, 2}, {-2, 1}}).length(1) == TestType{3});
+    REQUIRE(pde_domain<TestType>({{0, 2}, {-2, 1}}).xright(0) == TestType{2});
+
+    REQUIRE_THROWS_WITH(pde_domain<TestType>({{0, 1}, {6, -6}}),
+                        "domain_range specified with negative length");
+
+    pde_domain<TestType> dom(3);
+    REQUIRE_THROWS_WITH(dom.set({{0, 1}, {-6, 6}}),
+                        "provided number of domain_range entries does not match the number of dimensions");
+    dom.set({{0, 1}, {-6, 6}, {-4, 4}});
+    REQUIRE(dom.length(2) == TestType{8});
+
+    REQUIRE_THROWS_WITH(dom.set_names({"d1", "d2"}),
+                        "provided number of names does not match the number of dimensions");
+    dom.set_names({"d1", "d2", "d3"});
+    REQUIRE(dom.name(1) == std::string("d2"));
+  }
+
+  auto g = [](TestType const, TestType const) -> TestType { return 3.5; };
+  auto m = [](TestType const a, TestType const b) -> TestType { return a * b; };
+
+  SECTION("partial_term - identity") {
+    partial_term<TestType> ptI;
+    REQUIRE(ptI.is_identity());
+    partial_term<TestType> ptM_I(pt_mass);
+    REQUIRE(ptM_I.is_identity());
+  }
+
+  SECTION("partial_term - mass") {
+    partial_term<TestType> ptM(pt_mass, g);
+    REQUIRE_FALSE(ptM.is_identity());
+    REQUIRE(ptM.g_func()(3, 1.7) == 3.5);
+  }
+
+  SECTION("partial_term - div") {
+    partial_term<TestType> ptD(pt_div_dirichlet_zero, flux_type::upwind, m);
+    REQUIRE_FALSE(ptD.is_identity());
+    REQUIRE(ptD.coeff_type() == coefficient_type::div);
+    REQUIRE(ptD.flux() == flux_type::upwind);
+    REQUIRE(ptD.g_func()(3, 2) == TestType{6});
+  }
+
+  SECTION("partial_term - grad") {
+    partial_term<TestType> ptG(pt_grad_free, flux_type::downwind, m);
+    REQUIRE_FALSE(ptG.is_identity());
+    REQUIRE(ptG.coeff_type() == coefficient_type::grad);
+    REQUIRE(ptG.flux() == flux_type::upwind); // grad swaps the fluxes
+    REQUIRE(ptG.g_func()(-5, 3) == TestType{-15});
+  }
+
+  SECTION("pterm_chain1d - identity") {
+    pterm_chain1d<TestType> chain;
+    REQUIRE(chain.is_identity());
+    REQUIRE(chain.num_pterms() == 0);
+  }
+
+  SECTION("pterm_chain1d - 1 term") {
+    partial_term<TestType> ptD(pt_div_dirichlet_zero, flux_type::upwind, m);
+    pterm_chain1d<TestType> chain(ptD);
+    REQUIRE_FALSE(chain.is_identity());
+    REQUIRE(chain.num_pterms() == 1);
+  }
+
+  SECTION("pterm_chain1d - 2 terms") {
+    partial_term<TestType> ptI;
+    REQUIRE(pterm_chain1d<TestType>({ptI, ptI}).is_identity());
+    REQUIRE(pterm_chain1d<TestType>({ptI, ptI}).num_pterms() == 0);
+
+    partial_term<TestType> ptD(pt_div_dirichlet_zero, flux_type::upwind, m);
+    partial_term<TestType> ptG(pt_grad_dirichlet_zero, flux_type::downwind, m);
+
+    REQUIRE(pterm_chain1d<TestType>({ptI, ptD}).num_pterms() == 1);
+    REQUIRE(pterm_chain1d<TestType>({ptD, ptI}).num_pterms() == 1);
+
+    REQUIRE(pterm_chain1d<TestType>({ptD, ptG}).num_pterms() == 2);
+
+    REQUIRE_THROWS_WITH(pterm_chain1d<TestType>({ptD, ptD}),
+                        "incompatible flux combination used in a pterm_chain1d");
+  }
+
+  SECTION("pterm_chain1d - extra") {
+    partial_term<TestType> ptI;
+    partial_term<TestType> ptM(pt_mass, g);
+    partial_term<TestType> ptD(pt_div_dirichlet_zero, flux_type::upwind, m);
+    partial_term<TestType> ptG(pt_grad_dirichlet_zero, flux_type::downwind, m);
+    partial_term<TestType> ptGc(pt_div_dirichlet_zero, flux_type::central, m);
+
+    REQUIRE(pterm_chain1d<TestType>({ptI, ptD, ptM}).num_pterms() == 2);
+    REQUIRE(pterm_chain1d<TestType>({ptI, ptG, ptM, ptD, ptM}).num_pterms() == 4);
+    REQUIRE(pterm_chain1d<TestType>({ptGc, ptM}).num_pterms() == 2);
+
+    REQUIRE_THROWS_WITH(pterm_chain1d<TestType>({ptGc, ptD}),
+                        "incompatible flux combination used in a pterm_chain1d");
+
+    pterm_chain1d<TestType> chain({ptI, ptG, ptM, ptD, ptM});
+    REQUIRE(chain[0].coeff_type() == coefficient_type::grad);
+    REQUIRE(chain[1].coeff_type() == coefficient_type::mass);
+    REQUIRE(chain[2].coeff_type() == coefficient_type::div);
+    REQUIRE(chain[3].coeff_type() == coefficient_type::mass);
+  }
+
+  SECTION("term_md") {
+    partial_term<TestType> ptI;
+    partial_term<TestType> ptM(pt_mass, g);
+
+    REQUIRE(term_md<TestType>({ptM, ptI}).num_dims() == 2);
+    REQUIRE(term_md<TestType>({ptM, ptI}).term_mode() == term_md<TestType>::mode::separable);
+
+    REQUIRE_THROWS_WITH(term_md<TestType>({ptI, ptI}),
+                        "cannot create term_md with all terms being identities");
+
+    term_md<TestType> t1({ptM, ptI});
+    REQUIRE(term_md<TestType>({t1, t1}).term_mode() == term_md<TestType>::mode::chain);
+    REQUIRE(term_md<TestType>({t1, t1}).num_dims() == 2);
+    REQUIRE(term_md<TestType>({t1, t1, t1}).num_chain() == 3);
+
+    term_md<TestType> t2({ptI, ptI, ptM});
+    REQUIRE(term_md<TestType>({t2, t2}).num_dims() == 3);
+    REQUIRE_THROWS_WITH(term_md<TestType>({t1, t2}),
+                        "inconsistent dimension of terms in the chain");
+
+    std::vector<pterm_chain1d<TestType>> ptc = {ptI, ptI, ptI};
+    for (int i = 0; i < 3; i++)
+    {
+      ptc[i] = ptM;
+      term_md<TestType> tm(ptc);
+      REQUIRE(tm.num_dims() == 3);
+      REQUIRE(tm.term_mode() == term_md<TestType>::mode::separable);
+      ptc[i] = ptI;
+    }
+
+  }
+}
+
+TEMPLATE_TEST_CASE("pde v2", "[pde]", test_precs)
+{
+  SECTION("constructors")
+  {
+    PDEv2<TestType> empty_pde;
+    REQUIRE_FALSE(empty_pde);
+    prog_opts opts;
+    opts.degree = 4;
+    opts.start_levels = {3,};
+    pde_domain<TestType> domain({{1, 3}, {-1, 6}});
+    PDEv2<TestType> pde(opts, std::move(domain));
+    REQUIRE(!!pde);
+    REQUIRE(pde.domain().length(1) == TestType{7});
+    REQUIRE(!!pde.options().degree);
+    REQUIRE(pde.options().degree.value() == 4);
+  }
+}
+
+
+
 template<typename P>
 void test_compile()
 {

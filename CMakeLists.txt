@@ -491,7 +491,7 @@ if (ASGARD_USE_CUDA)
 endif ()
 
 #-------------------------------------------------------------------------------
-#  Define a asgard executable target.
+#  Define a asgard executables targets.
 #-------------------------------------------------------------------------------
 add_executable (asgard_exe)
 set_target_properties(asgard_exe PROPERTIES OUTPUT_NAME "asgard")
@@ -503,6 +503,12 @@ target_link_libraries (asgard_exe PRIVATE libasgard)
 if (${ASGARD_USE_PCH})
     target_precompile_headers (asgard_exe REUSE_FROM libasgard)
 endif ()
+
+foreach (_asgexe continuity)
+    add_executable (${_asgexe} "${CMAKE_CURRENT_SOURCE_DIR}/src/${_asgexe}.cpp")
+    target_link_libraries (${_asgexe} PUBLIC libasgard)
+    install(TARGETS ${_asgexe} EXPORT  "asgard-export" RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}/share/asgard/pde")
+endforeach()
 
 #-------------------------------------------------------------------------------
 # Builds the documentation, must come after asgard target is defined

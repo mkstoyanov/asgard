@@ -52,7 +52,7 @@ discretization_manager<precision>::discretization_manager(
     node_out() << "  generating: initial conditions..." << '\n';
   }
 
-  set_initial_condition();
+  set_initial_condition_v1();
 
   if (high_verbosity())
   {
@@ -132,7 +132,118 @@ discretization_manager<precision>::discretization_manager(
 }
 
 template<typename precision>
-void discretization_manager<precision>::set_initial_condition()
+discretization_manager<precision>::discretization_manager(
+    PDEv2<precision> pde_in, verbosity_level vebosity)
+  : verb(vebosity), pde2(std::move(pde_in)), conn(pde2.max_level()),
+    matrices(pde2)
+{
+  if (pde2.num_dims() == 0)
+    throw std::runtime_error("cannot discretize an empty pde");
+
+  if (pde2.options().restarting())
+    restart_from_file();
+  else
+    start_cold();
+
+  // do not keep lhs-mass-matrices (use and discard), keep only the dimension ones
+  // think of logic later, but consider dv options comping from the domain
+
+  // kronmult can use the matrices directly, keep a set of known flux opts
+  // terms_md need to know the flux direction
+  // one-time store the term-dir relationship for the kronmult::permutes using cmatrices
+  // remove the padding logic in krnomult, make calls with perms, active dirs
+  // also provide pointers to the block-sparse matrices
+
+  // update the reconstructor for the new grid
+  // file i/o, save and load things
+  // find/reset moments and dependencies, prepare poisson and so on (go over the logic)
+
+  // let the reconstructor use the new data types, i.e., grid/state and names
+  // allow python to read either state (recognize which is which)
+  // skip bad conversions between tsg and asg style in the reconstructor
+}
+
+template<typename precision>
+void discretization_manager<precision>::start_cold()
+{
+  auto const &options = pde2.options();
+
+  sgrid = sparse_grid(options);
+
+  if (high_verbosity())
+  {
+    std::cout << "Branch: " << GIT_BRANCH << '\n';
+    std::cout << "Commit Summary: " << GIT_COMMIT_HASH
+                    << GIT_COMMIT_SUMMARY << '\n';
+    std::cout << "This executable was built on " << BUILD_TIME << '\n';
+
+    std::cout << options;
+  }
+
+  degree_ = options.degree.value();
+
+  hier = hierarchy_manipulator(degree_, pde2.domain());
+
+  { // setting up the time-step approach
+    precision const stop = options.stop_time.value_or(-1);
+    precision const dt   = options.dt.value_or(-1);
+    int64_t const n      = options.num_time_steps.value_or(-1);
+
+    // if no method is set, defaulting to explicit time-stepping
+    time_advance::method sm = options.step_method.value_or(time_advance::method::exp);
+    if (n >= 0 and stop >= 0 and dt < 0)
+      dtime = time_data<precision>(
+          sm, n, typename time_data<precision>::input_stop_time{stop});
+    else if (dt >= 0 and stop >= 0 and n < 0)
+      dtime = time_data<precision>(sm,
+                                   typename time_data<precision>::input_dt{dt},
+                                   typename time_data<precision>::input_stop_time{stop});
+    else if (dt >= 0 and n >= 0 and stop < 0)
+      dtime = time_data<precision>(sm, typename time_data<precision>::input_dt{dt}, n);
+    else
+      throw std::runtime_error("Must provide exatly two of the three time-stepping parameters: "
+                               "-dt, -num-steps, -time");
+  }
+
+  set_initial_condition();
+
+  if (high_verbosity()) {
+    int64_t dof = sgrid.num_indexes() * hier.block_size();
+
+    std::cout << "initial number of cells: " << tools::split_style(sgrid.num_indexes())
+              << " - degrees of dreedom: " << tools::split_style(dof) << "\n";
+  }
+}
+
+template<typename precision>
+void discretization_manager<precision>::restart_from_file()
+{
+#ifdef ASGARD_USE_HIGHFIVE
+  h5writer<precision>::read(pde2.options().restart_file, high_verbosity(), pde2, sgrid,
+                            dtime, state);
+#else
+  throw std::runtime_error("restarting from a file requires CMake option "
+                           "-DASGARD_USE_HIGHFIVE=ON");
+#endif
+
+  auto const &options = pde2.options();
+
+  degree_ = options.degree.value();
+
+  hier = hierarchy_manipulator(degree_, pde2.domain());
+
+}
+template<typename precision>
+void discretization_manager<precision>::save_snapshot2(std::filesystem::path const &filename) const {
+#ifdef ASGARD_USE_HIGHFIVE
+  h5writer<precision>::write(pde2, degree_, sgrid, dtime, state, filename);
+#else
+  throw std::runtime_error("saving to a file requires CMake option -DASGARD_USE_HIGHFIVE=ON");
+#endif
+}
+
+template<typename precision>
+void discretization_manager<precision>::set_initial_condition_v1()
 {
   auto const &options = pde->options();
 
@@ -216,16 +327,62 @@ void discretization_manager<precision>::set_initial_condition()
 }
 
 template<typename precision>
+void discretization_manager<precision>::set_initial_condition()
+{
+  auto const &options = pde2.options();
+  std::vector<separable_func<precision>> const &sep = pde2.ic_sep();
+
+  precision const tol = options.adapt_threshold.value_or(-1);
+
+  bool keep_refining = true;
+
+  int iterations = 0;
+  while (keep_refining)
+  {
+    state.resize(sgrid.num_indexes() * hier.block_size());
+    std::fill(state.begin(), state.end(), precision{0});
+
+    for (int i : iindexof(sep)) {
+      hier.template project_separable<data_mode::increment>
+            (sep[i], pde2.domain(), sgrid, matrices.dim_dv, matrices.dim_mass,
+            precision{0}, state);
+    }
+
+    if (tol >= 0) {
+      // on the first iteration, do both refine and coarsen with a full-adapt
+      // on followon iteration, only add more nodes for stability and to avoid stagnation
+      sparse_grid::strategy mode = (iterations == 0) ? sparse_grid::strategy::adapt
+                                                     : sparse_grid::strategy::refine;
+      int const gid = sgrid.generation();
+      sgrid.refine(tol, hier.block_size(), conn[connect_1d::hierarchy::volume], mode, state);
+
+      // if the grid remained the same, there's nothing to do
+      keep_refining = (gid != sgrid.generation());
+      // if (keep_refining) {
+      //   std::cout << " num nodes = " << sgrid.num_indexes() << ", keep refining\n";
+      //   // keep_refining = (iterations < 4); // fail-safe
+      // }
+
+    } else { // no refinement set, use the grid as-is
+      keep_refining = false;
+    }
+
+    iterations++;
+  }
+
+}
+
+template<typename precision>
 void discretization_manager<precision>::ode_rhs(
     imex_flag imflag, precision t, std::vector<precision> const &x,
     std::vector<precision> &R) const
 {
   R.resize(x.size());
 
+#ifdef ASGARD_USE_MPI
   element_subgrid const &subgrid = grid.get_subgrid(get_rank());
 
-#ifdef ASGARD_USE_MPI
-  distribution_plan const &plan  = grid.get_distrib_plan();
+  distribution_plan const &plan = grid.get_distrib_plan();
 
   int64_t const row_size = hier.block_size() * subgrid.nrows();
 
@@ -242,10 +399,8 @@ void discretization_manager<precision>::ode_rhs(
   std::vector<precision> &reduced_row = R;
 #endif
 
+  kronops.make(imflag, *pde, matrices, grid);
   {
-    tools::time_event performance("kronmult-make/set");
-    kronops.make(imflag, *pde, matrices, grid);
-  }{
     tools::time_event performance("kronmult", kronops.flops(imflag));
     kronops.apply(imflag, t, 1.0, x.data(), 0.0, local_row.data());
   }
@@ -263,11 +418,7 @@ void discretization_manager<precision>::ode_rhs(
   }{
     tools::time_event performance("computing boundary conditions");
 
-    auto const bc0 = boundary_conditions::generate_scaled_bc(
-        fixed_bc[0], fixed_bc[1], *pde, subgrid.row_start, subgrid.row_stop, t);
-
-    for (auto i : indexof(bc0))
-      reduced_row[i] += bc0[i];
+    boundary_conditions::generate_scaled_bc(fixed_bc[0], fixed_bc[1], *pde, t, reduced_row);
   }
 
 #ifdef ASGARD_USE_MPI
@@ -279,7 +430,12 @@ template<typename precision>
 void discretization_manager<precision>::ode_irhs(
     precision t, std::vector<precision> const &x, std::vector<precision> &R) const
 {
-  R.resize(x.size());
+  if (R.empty())
+    R.resize(x.size());
+  else {
+    R.resize(x.size());
+    std::fill(R.begin(), R.end(), 0);
+  }
 
   if (not pde->sources().empty())
   {
@@ -299,19 +455,11 @@ void discretization_manager<precision>::ode_irhs(
   {
     tools::time_event performance("computing boundary conditions");
 
-    element_subgrid const &subgrid = grid.get_subgrid(get_rank());
-    auto const bc0 = boundary_conditions::generate_scaled_bc(
-        fixed_bc[0], fixed_bc[1], *pde, subgrid.row_start, subgrid.row_stop, t);
-
-    expect(static_cast<size_t>(bc0.size()) == R.size());
+    boundary_conditions::generate_scaled_bc(fixed_bc[0], fixed_bc[1], *pde, t, R);
 
     precision const dt = pde->get_dt();
-    if (pde->sources().empty())
-      for (auto i : indexof(bc0))
-        R[i] = x[i] + dt * bc0[i];
-    else
-      for (auto i : indexof(bc0))
-        R[i] = x[i] + dt * (bc0[i] + R[i]);
+    for (auto i : indexof(R))
+      R[i] = x[i] + dt * R[i];
   }
 }
 template<typename precision>
@@ -373,7 +521,7 @@ discretization_manager<precision>::do_poisson_update(std::vector<precision> cons
       emax = std::max(emax, std::abs(e));
     matrices.edata.electric_field_infnrm = emax;
   }
-};
+}
 
 template<typename precision>
 void discretization_manager<precision>::save_snapshot(std::filesystem::path const &filename) const

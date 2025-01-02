@@ -18,6 +18,10 @@ namespace asgard
  * command line or an input file and also specify PDE specific options.
  */
 
+// forward declaration that can befriend relevant classes
+template<typename P>
+class h5writer;
+
 /*!
  * \ingroup asgard_common_options
  * \brief Allows reducing the amount of cout-noise
@@ -161,7 +165,7 @@ namespace time_advance
 enum class method
 {
   //! implicit solve, backward Euler
-  imp,
+  imp = 0,
   //! (default) explicit Runge–Kutta
   exp, // explicit is reserved keyword
   //! implicit-explicit scheme for nonlinear Vlasov-Poisson problems
@@ -394,6 +398,8 @@ struct prog_opts
 
   //! time stepping method, explicit, implicit or imex
   std::optional<time_advance::method> step_method;
+  //! final time for the integration
+  std::optional<double> stop_time;
   //! fixed time step, if missing the default cfl condition will be used
   std::optional<double> dt;
   //! number of fixed time steps to take
@@ -479,6 +485,20 @@ struct prog_opts
   {
     return get_val<out_type>(externals, s);
   }
+  //! check if an extra option was present in the cli
+  bool has_cli_entry(std::string_view const &s) const
+  {
+    return std::any_of(externals.begin(), externals.end(),
+                       [&](std::string const &v)-> bool { return (v == s); });
+  }
+  //! check if an extra option was present in the cli or set to true in a file
+  bool has_entry(std::string_view const &s) const
+  {
+    if (has_cli_entry(s)) // if present in the cli
+      return true;
+    // not in the cli, check the file
+    return file_value<bool>(s).value_or(false);
+  }
 
   //! reads and returns a file_value, skips the optional but throws if the value is missing
   template<typename out_type>
@@ -509,6 +529,20 @@ struct prog_opts
       std::cerr << "warning: overriding the user-requested -solver" << std::endl;
     solver = method;
   }
+  //! used in palce of start_levels, if start_levels is not provided
+  std::vector<int> default_start_levels;
+  //! used in palce of degree, if degree is not provided
+  std::optional<int> default_degree;
+  //! used in place of dt, if dt is not set
+  std::optional<double> default_dt;
+  //! used in place of stop time, if stop time is not provided
+  std::optional<double> default_stop_time;
+
+  //! returns true if the options indicate a restart file
+  bool restarting() const { return not restart_file.empty(); }
+
+  //! (internal use) if we encounter a "no-adapt" option, must skip adaptivity during restart
+  bool set_no_adapt = false;
 
 private:
   //! mapping from cli options to variables and actions
@@ -532,6 +566,7 @@ private:
     num_time_steps,
     wavelet_output_freq,
     output_file,
+    stop_time,
     dt,
     pde_choice,
     solver,

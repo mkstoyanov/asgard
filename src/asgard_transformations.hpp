@@ -4,12 +4,14 @@
 
 namespace asgard
 {
-// overload - get only the elements of the combined vector that fall within a
-// specified range
+// combines the values from the vectors into the combined tensor list
+// the size of combined should be equal to the number of elements
+// times the tesor block size (degree + 1)^d
 template<typename P>
-std::vector<P>
-combine_dimensions(int const, elements::table const &, int const, int const,
-                   std::vector<std::vector<P>> const &, P const = 1.0);
+void combine_dimensions(int const degree, elements::table const &table,
+                        int const start_element, int const stop_element,
+                        std::vector<std::vector<P>> const &vectors,
+                        P combined[]);
 
 /*!
  * \internal
@@ -85,6 +87,68 @@ public:
     }
     setup_projection_matrices();
   }
+  //! initialize form the given set of dimensions
+  hierarchy_manipulator(int degree, pde_domain<P> const &domain)
+      : degree_(degree), block_size_(fm::ipow(degree + 1, domain.num_dims())),
+        quad(make_quadrature<P>(2 * degree_ + 1, -1, 1))
+  {
+    for (int i : iindexof(domain.num_dims()))
+    {
+      dmin[i] = domain.xleft(i);
+      dmax[i] = domain.xright(i);
+    }
+    setup_projection_matrices();
+  }
+
+  //! project separable function on the basis level
+  template<data_mode action = data_mode::replace>
+  void project_separable(separable_func<P> const &sep,
+                         pde_domain<P> const &domain,
+                         sparse_grid const &grid,
+                         std::array<function_1d<P>, max_num_dimensions> const &dv,
+                         mass_list &mass,
+                         P time, std::vector<P> &f)
+  {
+    expect(f.size() == static_cast<size_t>(grid.num_indexes() * block_size_));
+    int const num_dims = domain.num_dims();
+    for (int d : iindexof(num_dims))
+    {
+      project1d([&](std::vector<P> const &x, std::vector<P> &fx)
+          -> void {
+        sep.fdomain(d)(x, time, fx);
+      }, dv[d], mass[d], d, grid.current_level(d));
+    }
+
+    P const tmult = (sep.ftime()) ? sep.ftime()(time) : P{1};
+
+    int const pdof = degree_ + 1;
+    std::array<P const *, max_num_dimensions> data1d;
+
+    P *proj = f.data();
+
+    for (auto i : indexof(grid.num_indexes()))
+    {
+      int const *idx = grid[i];
+      for (int d : iindexof(num_dims))
+        data1d[d] = pf[d].data() + idx[d] * pdof;
+
+      for (int64_t i : indexof(block_size_))
+      {
+        int64_t t = i;
+        P val     = tmult;
+        for (int d = num_dims - 1; d >= 0; d--) {
+          val *= data1d[d][t % pdof];
+          t /= pdof;
+        }
+        if constexpr (action == data_mode::replace)
+          proj[i] = val;
+        else if constexpr (action == data_mode::increment)
+          proj[i] += val;
+      }
+
+      proj += block_size_;
+    }
+  }
 
   //! project separable function on the basis level
   template<data_mode action = data_mode::replace>
@@ -105,7 +169,7 @@ public:
           -> void {
         auto fkvec = funcs[d](x, time);
         std::copy(fkvec.begin(), fkvec.end(), fx.data());
-      }, (dv.empty()) ? nullptr : dv[d], mass[d], d, dims[d].get_level());
+      }, dv[d], mass[d], d, dims[d].get_level());
     }
 
     // looking at row start and stop
@@ -124,8 +188,7 @@ public:
     int const pdof = degree_ + 1;
     for (int64_t s = sstart; s <= sstop; s++)
     {
-      int const *const cc = cells + 2 * num_dims * s;
-      asg2tsg_convert(num_dims, cc, midx.data());
+      asg2tsg_convert(num_dims, cells + 2 * num_dims * s, midx.data());
       for (int d : indexof<int>(num_dims))
         data1d[d] = pf[d].data() + midx[d] * pdof;
 
