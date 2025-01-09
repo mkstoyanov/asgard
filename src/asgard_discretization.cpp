@@ -145,8 +145,37 @@ discretization_manager<precision>::discretization_manager(
   else
     start_cold();
 
+  // have 1d terms that are either chains or single terms (no interpolation)
+  // can dynamically add to a chain (if it is a chain)
+  // first term gets evaluated last, as it will be written down
+
+  // have 5 versions of bcs, priod, dir, free, left-dir, right-dir
+  // gfuncs use vector functions (no time component)
+  // still allow for lhs mass and dv, both vector
+  // missing function always means 1, identity, or grad
+  // in place of a function, can specify a constant
+  // have the time-dep property, for when depending on feedback
+  // (no explicit time dependence, for now)
+  // still have feedbacks for moment-mass matrices
+
+  // do not store the lhs mass-matrices, use and discard during evals
+
   // do not keep lhs-mass-matrices (use and discard), keep only the dimension ones
-  // think of logic later, but consider dv options comping from the domain
+  // think of logic later, but consider dv options coming from the domain
+
+  // term_manager
+  // have a single class that combines cmats, kron-opts and kron-mats
+  // move the terms into it, have a list of terms and meta data
+  // have a list of all block-sparse-matrices and point to it with the meta data
+  //   - the list will have num-dims blocks of matrices (vector2d)
+  // matrix consructor is a friend class, keeps small mats for lagendre
+  // the matrix constructor directly operates on the entries of the term-manager
+  // the terms will have a group flag, all, imex_imp, imex_expl
+  //   - cannot do imex on a PDE if some flags are not imex_expl or imex_imp
+  // RK and fully-implicit uses all flags, regardless
+
+  // during matrix reconstruction, automatically consider moments and poisson
+  // time-indep matrices go to the max-level automatically
 
   // kronmult can use the matrices directly, keep a set of known flux opts
   // terms_md need to know the flux direction
@@ -238,6 +267,7 @@ void discretization_manager<precision>::save_snapshot2(std::filesystem::path con
 #ifdef ASGARD_USE_HIGHFIVE
   h5writer<precision>::write(pde2, degree_, sgrid, dtime, state, filename);
 #else
+  ignore(filename);
   throw std::runtime_error("saving to a file requires CMake option -DASGARD_USE_HIGHFIVE=ON");
 #endif
 }
