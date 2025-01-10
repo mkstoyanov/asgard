@@ -501,154 +501,6 @@ private:
  *   grad or div with opposing downwind/upwind flux
  * - a penalty partial_term is equivalent to div/grad with central flux
  */
-template<typename P>
-class pterm_chain1d {
-public:
-  //! create a chain of a single identity term
-  pterm_chain1d() = default;
-  //! create a chain with a single partial term, not really a chain
-  pterm_chain1d(partial_term<P> pt)
-      : num_pterms_(1), pterms_{std::move(pt), partial_term<P>{}}
-  {
-    if (pterms_[0].is_identity()) // didn't actually add a term
-      num_pterms_ = 0;
-  }
-  //! initialize chain from a list of terms
-  pterm_chain1d(std::initializer_list<partial_term<P>> pt_list)
-    : num_pterms_(0) // will reinit the value below
-  {
-    if (pt_list.size() > 2)
-      extra_pterms.reserve(pt_list.size() - 2);
-    for (auto ip = pt_list.begin(); ip < pt_list.end(); ++ip)
-    {
-      if (not ip->is_identity())
-      {
-        switch (num_pterms_)
-        {
-          case 0:
-            pterms_[0] = std::move(*ip);
-            break;
-          case 1:
-            pterms_[1] = std::move(*ip);
-            break;
-          default:
-            extra_pterms.emplace_back(std::move(*ip));
-            break;
-        }
-        num_pterms_ ++;
-      }
-    }
-
-    if (not check_sane())
-      throw std::runtime_error("incompatible flux combination used in a pterm_chain1d");
-
-    //set_update();
-  }
-  //! initialize chain from a vector of terms
-  pterm_chain1d(std::vector<partial_term<P>> pt_list)
-    : num_pterms_(0) // will reinit the value below
-  {
-    if (pt_list.size() > 2)
-      extra_pterms.reserve(pt_list.size() - 2);
-    for (auto ip = pt_list.begin(); ip < pt_list.end(); ++ip)
-    {
-      if (not ip->is_identity())
-      {
-        switch (num_pterms_)
-        {
-          case 0:
-            pterms_[0] = std::move(*ip);
-            break;
-          case 1:
-            pterms_[1] = std::move(*ip);
-            break;
-          default:
-            extra_pterms.emplace_back(std::move(*ip));
-            break;
-        }
-        num_pterms_ ++;
-      }
-    }
-
-    if (not check_sane())
-      throw std::runtime_error("incompatible flux combination used in a pterm_chain1d");
-
-    //set_update();
-  }
-
-  bool is_identity() const { return (num_pterms_ == 0); }
-
-  int num_pterms() const { return num_pterms_; }
-
-  partial_term<P> const & operator[] (int i)
-  {
-    return (i < 2) ? pterms_[i] : extra_pterms[i - 2];
-  }
-
-private:
-  bool check_sane() {
-    int fluxdir = 2; // no flux direction found, two available
-    for (int i : iindexof(num_pterms())) {
-      partial_term<P> const &pt = (*this)[i];
-      // get the int-value of the flux, flip for grad
-      int const fdir = static_cast<int>(pt.flux())
-                      * ((pt.coeff_type() == coefficient_type::grad) ? -1 : 1);
-      switch (pt.coeff_type())
-      {
-        case coefficient_type::penalty:
-          if (fluxdir == 2) // have two flux dirs available
-            fluxdir = 0; // take both dirs
-          else
-            return false; // conflict, no flux-dirs left
-          break;
-        case coefficient_type::div:
-        case coefficient_type::grad:
-          // if the fdir direction is already taken, bad setup
-          if (fluxdir == 0 or fluxdir == fdir)
-            return false;
-          else if (fdir == 0) { // requested central flux, takes two dirs
-            if (fluxdir != 2) // one flux dir already used, bad
-              return false;
-            else
-              fluxdir = 0; // take all flux dirs
-          } else { // requested up/down flux, take one dir
-            if (fluxdir != 2) // one flux already used
-              fluxdir = 0; // ok, but no flux available anymore
-            else
-              fluxdir = fdir; // two available, take one flux direction
-          }
-        default: // mass term, nothing to do
-          break;
-      }
-    }
-    return true;
-  }
-
-  // void set_update() {
-  //   for (int i : iindexof(num_pterms())) {
-  //     partial_term<P> const &pt = (*this)[i];
-  //     switch (update_) {
-  //       case update_on_change::none:
-  //         update_ = pt.update();
-  //         break;
-  //       case update_on_change::mesh_level:
-  //         if (pt.update() == update_on_change::time)
-  //           update_ = update_on_change::time;
-  //         break;
-  //       default:
-  //         break;
-  //     }
-  //   }
-  // }
-
-  //! set to zero if all terms are identity, otherwise counts all terms including identities
-  int num_pterms_   = 0;
-  //! indicates when the term matrices should be recomputed
-  //update_on_change update_ = update_on_change::none;
-  // have no more than 2 terms in almost all cases
-  std::array<partial_term<P>, 2> pterms_;
-  std::vector<partial_term<P>> extra_pterms;
-};
 
 //! intermediate container for a mass term
 struct term_identity {};
@@ -684,9 +536,9 @@ struct term_grad {
   {}
 
   flux_type flux;
+  boundary_type boundary;
   P const_coeff = 0;
   sfixed_func1d<P> left, right;
-  boundary_type boundary;
 };
 //! intermediate container for a div term
 template<typename P>
@@ -705,14 +557,31 @@ struct term_div {
   {}
 
   flux_type flux;
+  boundary_type boundary;
   P const_coeff = 0;
   sfixed_func1d<P> left, right;
-  boundary_type boundary;
 };
 
 
 /*!
  * \brief One dimensional term, building block of separable operators
+ *
+ * This class has two main modes of operation, first is as a single term representing
+ * mass, div, grad, or penalty operation. The simple operations are best created
+ * using the helper structs term_identity, term_mass, term_div and term_grad.
+ *
+ * The second mode is to represent a chain of simple terms.
+ * The operators in the chain will be multiplied together using small-matrix
+ * logic in a local cell-by-cell algorithm.
+ * Chains of partial terms are computationally more efficient than chains
+ * of multidimensional terms, but have more restrictions on the types
+ * of terms that can be chained:
+ * - div or grad partial term with central flux can only chain with a mass term
+ * - div or grad partial term with upwind/downwind flux can only chain with
+ *   grad or div with opposing downwind/upwind flux
+ * - a penalty term is equivalent to div/grad with central flux
+ *
+ * Chain-of-chains is not allowed as it makes little sense.
  */
 template<typename P>
 class term_1d
@@ -762,9 +631,12 @@ public:
   {
     // remove the identity terms in the chain
     int numid = 0;
-    for (auto const &c : chain_)
+    for (auto const &c : chain_) {
       if (c.is_identity())
         numid += 1;
+      if (c.is_chain())
+        throw std::runtime_error("cannot create a chain-of-chains of term1d");
+    }
 
     int const num_chain = this->num_chain();
     if (num_chain == numid) {
@@ -777,7 +649,7 @@ public:
         if (not c.is_identity()) {
           term_1d<P> temp = std::move(c);
           *this = std::move(temp);
-          return;
+          break;
         }
       }
     } else if (numid > 0) {
@@ -789,6 +661,10 @@ public:
           chain_.emplace_back(std::move(c));
       }
     }
+
+    if (not check_chain())
+      throw std::runtime_error("incompatible flux combination used in a term_1d chain, "
+                               "must split into a term_md chain");
   }
 
   bool is_identity() const { return (optype_ == operation_type::identity); }
@@ -828,11 +704,54 @@ public:
 
   pterm_dependence depends() const { return depends_; }
 
+  //! (chain-mode only) number of chained terms
   int num_chain() const { return static_cast<int>(chain_.size()); }
-
+  //! (chain-mode only) get the vector of the chain
   std::vector<term_1d<P>> const &chain() const { return chain_; }
+  //! (chain-mode only) get the i-th term in the chain
+  term_1d<P> const &chain(int i) const { return chain_[i]; }
+  //! (chain-mode only) get the i-th term in the chain
+  term_1d<P> const &operator[](int i) const { return chain_[i]; }
 
 private:
+  bool check_chain() {
+    int fluxdir = 2; // no flux direction found, two available
+    for (int i : iindexof(chain_)) {
+      term_1d<P> const &pt = chain_[i];
+      // get the int-value of the flux, flip for grad
+      int const fdir = static_cast<int>(pt.flux())
+                      * ((pt.optype() == operation_type::grad) ? -1 : 1);
+      switch (pt.optype())
+      {
+        case operation_type::penalty:
+          if (fluxdir == 2) // have two flux dirs available
+            fluxdir = 0; // take both dirs
+          else
+            return false; // conflict, no flux-dirs left
+          break;
+        case operation_type::div:
+        case operation_type::grad:
+          // if the fdir direction is already taken, bad setup
+          if (fluxdir == 0 or fluxdir == fdir)
+            return false;
+          else if (fdir == 0) { // requested central flux, takes two dirs
+            if (fluxdir != 2) // one flux dir already used, bad
+              return false;
+            else
+              fluxdir = 0; // take all flux dirs
+          } else { // requested up/down flux, take one dir
+            if (fluxdir != 2) // one flux already used
+              fluxdir = 0; // ok, but no flux available anymore
+            else
+              fluxdir = fdir; // two available, take one flux direction
+          }
+        default: // mass term has no flux, nothing to do
+          break;
+      }
+    }
+    return true;
+  }
+
   operation_type optype_ = operation_type::identity;
   pterm_dependence depends_ = pterm_dependence::none;
 
@@ -871,11 +790,11 @@ public:
   enum class mode { separable, interpolatory, chain };
 
   //! 1d separable case
-  term_md(pterm_chain1d<P> chain)
+  term_md(term_1d<P> chain)
     : term_md({std::move(chain), })
   {}
   //! multi-dimensional separable case, using initializer list
-  term_md(std::initializer_list<pterm_chain1d<P>> clist)
+  term_md(std::initializer_list<term_1d<P>> clist)
     : mode_(mode::separable), num_dims_(static_cast<int>(clist.size()))
   {
     int num_identity = 0;
@@ -890,7 +809,7 @@ public:
       throw std::runtime_error("cannot create term_md with all terms being identities");
   }
   //! multi-dimensional separable case, using std::vector
-  term_md(std::vector<pterm_chain1d<P>> clist)
+  term_md(std::vector<term_1d<P>> clist)
     : mode_(mode::separable), num_dims_(static_cast<int>(clist.size()))
   {
     int num_identity = 0;
@@ -957,13 +876,13 @@ public:
     }
   }
 
-  //! get the chain term with index i
-  pterm_chain1d<P> & dim(int i) {
+  //! (separable mode only) get the 1d term with index i
+  term_1d<P> & dim(int i) {
     expect(sep == mode::separable);
     return chain_[i];
   }
-  //! get the chain term with index i, const-overload
-  pterm_chain1d<P> const & dim(int i) const {
+  //! (separable mode only) get the 1d term with index i, const overload
+  term_1d<P> const & dim(int i) const {
     expect(mode_ == mode::separable);
     return sep[i];
   }
@@ -1016,7 +935,7 @@ private:
   mode mode_ = mode::interpolation;
   // separable case
   int num_dims_ = 0;
-  std::array<pterm_chain1d<P>, max_num_dimensions> sep;
+  std::array<term_1d<P>, max_num_dimensions> sep;
   // non-separable/interpolation case
   md_func_f<P> interp_;
   // chain of other terms
@@ -2025,6 +1944,8 @@ public:
 
   //! shortcut for the number of dimensions
   int num_dims() const { return domain_.num_dims(); }
+  //! shortcut for the number of terms
+  int num_terms() const { return static_cast<int>(terms_.size()); }
   //! indicates whether the pde was initialized with a domain
   operator bool () const { return (domain_.num_dims() > 0); }
   //! return the max level that can be used by the grid
@@ -2061,6 +1982,8 @@ public:
   }
   //! returns the loaded terms
   std::vector<term_md<P>> const &terms() const { return terms_; }
+  //! returns the i-th term
+  term_md<P> const &term(int i) const { return terms_[i]; }
 
   //! set non-separable right-hand-source, can have only one
   void set_source(md_func<P> smd) {
@@ -2077,6 +2000,8 @@ public:
   }
   //! returns the separable sources
   std::vector<separable_func<P>> const &source_sep() const { return sources_sep_; }
+  //! returns the i-th separable sources
+  separable_func<P> const &source_sep(int i) const { return sources_sep_[i]; }
   //! returns the non-separable source
   md_func<P> const &source_md() const { return sources_md_; }
 

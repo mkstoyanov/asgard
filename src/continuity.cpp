@@ -83,17 +83,16 @@ int main(int argc, char** argv)
   PDEv2<P> pde(std::move(options), std::move(domain));
 
   // one dimensional divergence term using upwind flux
-  // note the type change, we are creating pterm_chain1d from a singe partial_term
   // multiple terms can be chained to obtain higher order derivatives
-  pterm_chain1d<P> div = partial_term<P>(pt_div_periodic, flux_type::upwind, const_one);
+  term_1d<P> div = term_div(flux_type::upwind, boundary_type::periodic, P{1});
 
   // the multi-dimensional divergence, initially set to identity in md
-  std::vector<pterm_chain1d<P>> ops(num_dims);
+  std::vector<term_1d<P>> ops(num_dims);
   for (int d = 0; d < num_dims; d++)
   {
     ops[d] = div; // using derivative in the d-direction
     pde += term_md<P>(ops);
-    ops[d] = pterm_chain1d<P>{pt_identity}; // reset back to identity
+    ops[d] = term_identity{}; // reset back to identity
   }
 
   // define a vector containing the entries for the separable known solution
