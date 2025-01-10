@@ -69,7 +69,7 @@ enum class coefficient_type
   penalty
 };
 
-enum class opeation_type
+enum class operation_type
 {
   identity,
   mass,
@@ -650,18 +650,66 @@ private:
   std::vector<partial_term<P>> extra_pterms;
 };
 
+//! intermediate container for a mass term
 struct term_identity {};
+//! intermediate container for a mass term
 template<typename P>
 struct term_mass {
+  //! make a mass term with constant coefficient
   term_mass(P cc) : const_coeff(cc) {}
+  //! make a mass term with given right hand side coefficient
   term_mass(sfixed_func1d<P> rhs) : right(std::move(rhs)) {}
+  //! make a mass term with given left and right hand side coefficients
   term_mass(sfixed_func1d<P> lhs, sfixed_func1d<P> rhs)
-    : left(lhs), right(std::move(rhs))
+    : left(std::move(lhs)), right(std::move(rhs))
   {}
 
   P const_coeff = 0;
   sfixed_func1d<P> left, right;
 };
+//! intermediate container for a grad term
+template<typename P>
+struct term_grad {
+  //! make a grad term with constant coefficient
+  term_grad(flux_type flx, boundary_type bnd, P cc)
+    : flux(flx), boundary(bnd), const_coeff(cc)
+  {}
+  //! make a grad term with given right hand side coefficient
+  term_grad(flux_type flx, boundary_type bnd, sfixed_func1d<P> frhs = nullptr)
+    : flux(flx), boundary(bnd), right(std::move(frhs))
+  {}
+  //! make a grad term with both right and left hand side coefficients
+  term_grad(flux_type flx, boundary_type bnd, sfixed_func1d<P> flhs, sfixed_func1d<P> frhs)
+    : flux(flx), boundary(bnd), left(std::move(flhs)), right(std::move(frhs))
+  {}
+
+  flux_type flux;
+  P const_coeff = 0;
+  sfixed_func1d<P> left, right;
+  boundary_type boundary;
+};
+//! intermediate container for a div term
+template<typename P>
+struct term_div {
+  //! make a grad term with constant coefficient
+  term_div(flux_type flx, boundary_type bnd, P cc)
+    : flux(flx), boundary(bnd), const_coeff(cc)
+  {}
+  //! make a grad term with given right hand side coefficient
+  term_div(flux_type flx, boundary_type bnd, sfixed_func1d<P> frhs = nullptr)
+    : flux(flx), boundary(bnd), right(std::move(frhs))
+  {}
+  //! make a grad term with both right and left hand side coefficients
+  term_div(flux_type flx, boundary_type bnd, sfixed_func1d<P> flhs, sfixed_func1d<P> frhs)
+    : flux(flx), boundary(bnd), left(std::move(flhs)), right(std::move(frhs))
+  {}
+
+  flux_type flux;
+  P const_coeff = 0;
+  sfixed_func1d<P> left, right;
+  boundary_type boundary;
+};
+
 
 /*!
  * \brief One dimensional term, building block of separable operators
@@ -675,14 +723,14 @@ public:
   //! make an identity term
   term_1d(term_identity) {}
   //! make a general term
-  term_1d(opeation_type opt, flux_type flx, boundary_type bnd,
+  term_1d(operation_type opt, flux_type flx, boundary_type bnd,
           sfixed_func1d<P> flhs, sfixed_func1d<P> frhs, P crhs)
       : optype_(opt), flux_(flx), boundary_(bnd),
         lhs_(std::move(flhs)), rhs_(std::move(frhs)), rhs_const_(crhs)
   {
-    expect(optype_ != opeation_type::identity);
+    expect(optype_ != operation_type::identity);
 
-    if (optype_ == opeation_type::grad) {
+    if (optype_ == operation_type::grad) {
       if (flux_ == flux_type::upwind)
         flux_ = flux_type::downwind;
       else if (flux_ == flux_type::downwind)
@@ -691,16 +739,67 @@ public:
   }
   //! make a term that depends on coupled fields, e.g., moments or electric field
   term_1d(pterm_dependence dep, sfixed_func1d_f<P> ffunc)
-    : optype_(opeation_type::mass), depends_(dep), field_f_(std::move(ffunc))
+    : optype_(operation_type::mass), depends_(dep), field_f_(std::move(ffunc))
   {}
 
-  bool is_identity() const { return (optype_ == opeation_type::identity); }
-  bool is_mass() const { return (optype_ == opeation_type::mass); }
-  bool is_grad() const { return (optype_ == opeation_type::grad); }
-  bool is_div() const { return (optype_ == opeation_type::div); }
-  bool is_penalty() const { return (optype_ == opeation_type::penalty); }
+  //! make a mass term
+  term_1d(term_mass<P> mt)
+    : term_1d(operation_type::mass, flux_type::central, boundary_type::free,
+              std::move(mt.left), std::move(mt.right), mt.const_coeff)
+  {}
+  //! make a grad term
+  term_1d(term_grad<P> grd)
+    : term_1d(operation_type::grad, grd.flux, grd.boundary,
+              std::move(grd.left), std::move(grd.right), grd.const_coeff)
+  {}
+  //! make a div term
+  term_1d(term_div<P> divt)
+    : term_1d(operation_type::div, divt.flux, divt.boundary,
+              std::move(divt.left), std::move(divt.right), divt.const_coeff)
+  {}
+  //! make a chain term
+  term_1d(std::vector<term_1d<P>> tvec) : chain_(std::move(tvec))
+  {
+    // remove the identity terms in the chain
+    int numid = 0;
+    for (auto const &c : chain_)
+      if (c.is_identity())
+        numid += 1;
 
-  opeation_type optype() const { return optype_; }
+    int const num_chain = this->num_chain();
+    if (num_chain == numid) {
+      // all identities, nothing to chain
+      optype_ = operation_type::identity;
+      chain_.resize(0);
+    } else if (num_chain - numid == 1) {
+      // chain has only one non-identity term
+      for (auto &c : chain_) {
+        if (not c.is_identity()) {
+          term_1d<P> temp = std::move(c);
+          *this = std::move(temp);
+          return;
+        }
+      }
+    } else if (numid > 0) {
+      std::vector<term_1d<P>> vec = std::move(chain_);
+      chain_ = std::vector<term_1d<P>>();
+      chain_.reserve(vec.size() - numid);
+      for (auto &c : vec) {
+        if (not c.is_identity())
+          chain_.emplace_back(std::move(c));
+      }
+    }
+  }
+
+  bool is_identity() const { return (optype_ == operation_type::identity); }
+  bool is_mass() const { return (optype_ == operation_type::mass); }
+  bool is_grad() const { return (optype_ == operation_type::grad); }
+  bool is_div() const { return (optype_ == operation_type::div); }
+  bool is_penalty() const { return (optype_ == operation_type::penalty); }
+
+  bool is_chain() const { return not chain_.empty(); }
+
+  operation_type optype() const { return optype_; }
 
   boundary_type boundary() const { return boundary_; }
 
@@ -729,8 +828,12 @@ public:
 
   pterm_dependence depends() const { return depends_; }
 
+  int num_chain() const { return static_cast<int>(chain_.size()); }
+
+  std::vector<term_1d<P>> const &chain() const { return chain_; }
+
 private:
-  opeation_type optype_ = opeation_type::identity;
+  operation_type optype_ = operation_type::identity;
   pterm_dependence depends_ = pterm_dependence::none;
 
   flux_type flux_ = flux_type::central;
@@ -744,6 +847,8 @@ private:
 
   int mom = 0;
   sfixed_func1d_f<P> field_f_;
+
+  std::vector<term_1d<P>> chain_;
 };
 
 /*!
