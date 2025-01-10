@@ -13,6 +13,15 @@ using vector_func = std::function<fk::vector<P>(fk::vector<P> const, P const)>;
 template<typename P>
 using svector_func1d = std::function<void(std::vector<P> const &x, P t, std::vector<P> &fx)>;
 
+//! vector function using std::vector signature, computes fx(x) in 1d
+template<typename P>
+using sfixed_func1d = std::function<void(std::vector<P> const &x, std::vector<P> &fx)>;
+
+//! vector function using std::vector signature and a field, computes fx(x) in 1d
+template<typename P>
+using sfixed_func1d_f = std::function<void(std::vector<P> const &x, std::vector<P> const &f,
+                                           std::vector<P> &fx)>;
+
 template<typename P>
 using md_func_type = std::vector<vector_func<P>>;
 

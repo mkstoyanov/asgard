@@ -37,6 +37,15 @@ enum class boundary_condition
   free
 };
 
+enum class boundary_type
+{
+  periodic,
+  dirichlet,
+  free,
+  left_free,
+  right_free,
+};
+
 // helper - single element size
 auto const element_segment_size = [](auto const &pde) {
   int const degree = pde.get_dimensions()[0].get_degree();
@@ -56,6 +65,15 @@ enum class coefficient_type
 {
   grad,
   mass,
+  div,
+  penalty
+};
+
+enum class opeation_type
+{
+  identity,
+  mass,
+  grad,
   div,
   penalty
 };
@@ -108,12 +126,12 @@ int constexpr num_imex_variants = 3;
  * a time advance algorithm.
  * The penalty terms have to be updated when the mesh discretization level changes.
  */
-enum class update_on_change
+enum class changes_with
 {
   //! no need to update the operator matrices
   none,
   //! update on change in the discretization level and cell size
-  mesh_level,
+  level,
   //! assume we must always update on chnge in the time or the solution field
   time
 };
@@ -321,8 +339,8 @@ public:
                g_func_type<P> const dv_func_in       = nullptr)
 
       : coeff_type_(coefficient_type::mass), depends_(depends_in),
-        update_(update_on_change::time), g_func_f_(g_func_f_in),
-        lhs_mass_func_(lhs_mass_func_in), dv_func_(dv_func_in)
+        g_func_f_(g_func_f_in), lhs_mass_func_(lhs_mass_func_in),
+        dv_func_(dv_func_in)
   {
     expect(depends_ != pterm_dependence::none);
     expect(depends_ != pterm_dependence::moment_divided_by_density);
@@ -340,7 +358,7 @@ public:
   //! indicates mass term with coefficient mom_in.moment / moment0
   partial_term(mass_moment_over_density mom_in, g_func_type<P> const dv_func_in = nullptr)
       : depends_(pterm_dependence::moment_divided_by_density),
-        update_(update_on_change::time), mom(mom_in.moment), dv_func_(dv_func_in)
+        mom(mom_in.moment), dv_func_(dv_func_in)
   {}
   //! indicates mass term with coefficient - mom_in.moment / moment0
   partial_term(mass_moment_over_density_neg mom_in, g_func_type<P> const dv_func_in = nullptr)
@@ -389,8 +407,6 @@ public:
   bool right_bc_zero() const { return right_bc_funcs_.empty(); };
 
   int mom_index() const { return mom; }
-
-  update_on_change update() const { return update_; }
 
   std::vector<vector_func<P>> const &left_bc_funcs() const
   {
@@ -450,8 +466,6 @@ private:
 
   pterm_dependence depends_ = pterm_dependence::none;
 
-  update_on_change update_ = update_on_change::none; // when do we recompute
-
   g_func_type<P> g_func_;
   g_func_f_type<P> g_func_f_;
   g_func_type<P> lhs_mass_func_;
@@ -494,7 +508,7 @@ public:
   pterm_chain1d() = default;
   //! create a chain with a single partial term, not really a chain
   pterm_chain1d(partial_term<P> pt)
-      : num_pterms_(1), update_(pt.update()), pterms_{std::move(pt), partial_term<P>{}}
+      : num_pterms_(1), pterms_{std::move(pt), partial_term<P>{}}
   {
     if (pterms_[0].is_identity()) // didn't actually add a term
       num_pterms_ = 0;
@@ -528,7 +542,7 @@ public:
     if (not check_sane())
       throw std::runtime_error("incompatible flux combination used in a pterm_chain1d");
 
-    set_update();
+    //set_update();
   }
   //! initialize chain from a vector of terms
   pterm_chain1d(std::vector<partial_term<P>> pt_list)
@@ -559,7 +573,7 @@ public:
     if (not check_sane())
       throw std::runtime_error("incompatible flux combination used in a pterm_chain1d");
 
-    set_update();
+    //set_update();
   }
 
   bool is_identity() const { return (num_pterms_ == 0); }
@@ -570,8 +584,6 @@ public:
   {
     return (i < 2) ? pterms_[i] : extra_pterms[i - 2];
   }
-
-  update_on_change update() const { return update_; }
 
 private:
   bool check_sane() {
@@ -612,30 +624,126 @@ private:
     return true;
   }
 
-  void set_update() {
-    for (int i : iindexof(num_pterms())) {
-      partial_term<P> const &pt = (*this)[i];
-      switch (update_) {
-        case update_on_change::none:
-          update_ = pt.update();
-          break;
-        case update_on_change::mesh_level:
-          if (pt.update() == update_on_change::time)
-            update_ = update_on_change::time;
-          break;
-        default:
-          break;
-      }
-    }
-  }
+  // void set_update() {
+  //   for (int i : iindexof(num_pterms())) {
+  //     partial_term<P> const &pt = (*this)[i];
+  //     switch (update_) {
+  //       case update_on_change::none:
+  //         update_ = pt.update();
+  //         break;
+  //       case update_on_change::mesh_level:
+  //         if (pt.update() == update_on_change::time)
+  //           update_ = update_on_change::time;
+  //         break;
+  //       default:
+  //         break;
+  //     }
+  //   }
+  // }
 
   //! set to zero if all terms are identity, otherwise counts all terms including identities
   int num_pterms_   = 0;
   //! indicates when the term matrices should be recomputed
-  update_on_change update_ = update_on_change::none;
+  //update_on_change update_ = update_on_change::none;
   // have no more than 2 terms in almost all cases
   std::array<partial_term<P>, 2> pterms_;
   std::vector<partial_term<P>> extra_pterms;
+};
+
+struct term_identity {};
+template<typename P>
+struct term_mass {
+  term_mass(P cc) : const_coeff(cc) {}
+  term_mass(sfixed_func1d<P> rhs) : right(std::move(rhs)) {}
+  term_mass(sfixed_func1d<P> lhs, sfixed_func1d<P> rhs)
+    : left(lhs), right(std::move(rhs))
+  {}
+
+  P const_coeff = 0;
+  sfixed_func1d<P> left, right;
+};
+
+/*!
+ * \brief One dimensional term, building block of separable operators
+ */
+template<typename P>
+class term_1d
+{
+public:
+  //! make an identity term
+  term_1d() = default;
+  //! make an identity term
+  term_1d(term_identity) {}
+  //! make a general term
+  term_1d(opeation_type opt, flux_type flx, boundary_type bnd,
+          sfixed_func1d<P> flhs, sfixed_func1d<P> frhs, P crhs)
+      : optype_(opt), flux_(flx), boundary_(bnd),
+        lhs_(std::move(flhs)), rhs_(std::move(frhs)), rhs_const_(crhs)
+  {
+    expect(optype_ != opeation_type::identity);
+
+    if (optype_ == opeation_type::grad) {
+      if (flux_ == flux_type::upwind)
+        flux_ = flux_type::downwind;
+      else if (flux_ == flux_type::downwind)
+        flux_ = flux_type::upwind;
+    }
+  }
+  //! make a term that depends on coupled fields, e.g., moments or electric field
+  term_1d(pterm_dependence dep, sfixed_func1d_f<P> ffunc)
+    : optype_(opeation_type::mass), depends_(dep), field_f_(std::move(ffunc))
+  {}
+
+  bool is_identity() const { return (optype_ == opeation_type::identity); }
+  bool is_mass() const { return (optype_ == opeation_type::mass); }
+  bool is_grad() const { return (optype_ == opeation_type::grad); }
+  bool is_div() const { return (optype_ == opeation_type::div); }
+  bool is_penalty() const { return (optype_ == opeation_type::penalty); }
+
+  opeation_type optype() const { return optype_; }
+
+  boundary_type boundary() const { return boundary_; }
+
+  flux_type flux() const { return flux_; }
+
+  sfixed_func1d<P> const &lhs() const { return lhs_; }
+  void lhs(std::vector<P> const &x, std::vector<P> &fx) const {
+    return lhs_(x, fx);
+  }
+
+  sfixed_func1d<P> const &rhs() const { return rhs_; }
+  void rhs(std::vector<P> const &x, std::vector<P> &fx) const {
+    return rhs_(x, fx);
+  }
+
+  int moment() const { return mom; }
+
+  sfixed_func1d_f<P> const &field() const { return field_f_; }
+  void field(std::vector<P> const &x, std::vector<P> const &f, std::vector<P> &fx) const {
+    return field_f_(x, f, fx);
+  }
+
+  P rhs_const() const { return rhs_const_; }
+
+  changes_with &change() { return change_; }
+
+  pterm_dependence depends() const { return depends_; }
+
+private:
+  opeation_type optype_ = opeation_type::identity;
+  pterm_dependence depends_ = pterm_dependence::none;
+
+  flux_type flux_ = flux_type::central;
+  boundary_type boundary_ = boundary_type::free;
+
+  changes_with change_ = changes_with::none;
+
+  sfixed_func1d<P> lhs_;
+  sfixed_func1d<P> rhs_;
+  P rhs_const_ = 1;
+
+  int mom = 0;
+  sfixed_func1d_f<P> field_f_;
 };
 
 /*!
