@@ -6,54 +6,186 @@ static auto const pde_base_dir = gold_base_dir / "pde";
 
 using namespace asgard;
 
-template<typename P>
-void test_compile()
+TEMPLATE_TEST_CASE("pde book-keeping", "[pde]", test_precs)
 {
-  asgard::prog_opts opts;
-  opts.pde_choice   = asgard::PDE_opts::custom;
-  opts.start_levels = {2, 2};
-
-  asgard::PDE<P> empty_pde;
-  asgard::ignore(empty_pde);
-
-  auto diff_pde =
-        asgard::make_custom_pde<asgard::PDE_diffusion_2d<P>>(opts);
-
-  static_assert(std::is_same_v<decltype(diff_pde),
-                               std::unique_ptr<asgard::PDE<P>>>);
-
-  auto cont3d = make_PDE<P>("-p continuity_3 -l 2 -d 0");
-
-  static_assert(std::is_same_v<decltype(cont3d),
-                               std::unique_ptr<asgard::PDE<P>>>);
-
-  try
+  SECTION("pde_domain")
   {
-    auto derived = dynamic_cast<PDE_continuity_3d<P> *>(cont3d.get());
-    static_assert(std::is_same_v<decltype(derived),
-                                 PDE_continuity_3d<P> *>);
-    REQUIRE(derived->options().degree.value() == 0);
+    REQUIRE(pde_domain<TestType>(1).num_dims() == 1);
+    REQUIRE(pde_domain<TestType>(2).num_dims() == 2);
+    REQUIRE(pde_domain<TestType>(2).num_pos() == 0);
+    REQUIRE(pde_domain<TestType>(3).num_vel() == 0);
+    REQUIRE(pde_domain<TestType>(1).length(0) == TestType{1});
+    REQUIRE(pde_domain<TestType>(1).name(0) == std::string("x1"));
+    REQUIRE(pde_domain<TestType>(4).name(3) == std::string("x4"));
+
+    REQUIRE_THROWS_WITH(pde_domain<TestType>(-3),
+                        "pde_domain created with zero or negative dimensions");
+    REQUIRE_THROWS_WITH(pde_domain<TestType>(max_num_dimensions + 1),
+                        "pde_domain created with too many dimensions, max is 6D");
+
+    REQUIRE(pde_domain<TestType>({{0, 2}, {-2, 1}}).length(0) == TestType{2});
+    REQUIRE(pde_domain<TestType>({{0, 2}, {-2, 1}}).xleft(1) == TestType{-2});
+    REQUIRE(pde_domain<TestType>({{0, 2}, {-2, 1}}).length(1) == TestType{3});
+    REQUIRE(pde_domain<TestType>({{0, 2}, {-2, 1}}).xright(0) == TestType{2});
+
+    REQUIRE_THROWS_WITH(pde_domain<TestType>({{0, 1}, {6, -6}}),
+                        "domain_range specified with negative length");
+
+    pde_domain<TestType> dom(3);
+    REQUIRE_THROWS_WITH(dom.set({{0, 1}, {-6, 6}}),
+                        "provided number of domain_range entries does not match the number of dimensions");
+    dom.set({{0, 1}, {-6, 6}, {-4, 4}});
+    REQUIRE(dom.length(2) == TestType{8});
+
+    REQUIRE_THROWS_WITH(dom.set_names({"d1", "d2"}),
+                        "provided number of names does not match the number of dimensions");
+    dom.set_names({"d1", "d2", "d3"});
+    REQUIRE(dom.name(1) == std::string("d2"));
   }
-  catch (std::bad_cast &e)
-  {
-    std::cerr << "using dynamic cast on PDE_continuity_3d failed with message\n";
-    std::cerr << e.what() << "\n";
-    REQUIRE(false);
+
+  auto rhs = [](std::vector<TestType> const &, std::vector<TestType> &) -> void {};
+  auto mhs = [](std::vector<TestType> const &x, std::vector<TestType> &fx)
+    -> void {
+      for (auto i : indexof(x))
+        fx[i] = 2 * x[i];
+    };
+
+  SECTION("term_1d - identity") {
+    term_1d<TestType> ptI1;
+    REQUIRE(ptI1.is_identity());
+    term_1d<TestType> ptI2 = term_identity{};
+    REQUIRE(ptI2.is_identity());
+  }
+
+  SECTION("term_1d - mass") {
+    term_1d<TestType> ptM = term_mass<TestType>{3.5};
+    REQUIRE_FALSE(ptM.is_identity());
+    REQUIRE(ptM.rhs_const() == 3.5);
+    REQUIRE(term_1d<TestType>(term_mass<TestType>{rhs}).rhs()); // loaded a function
+  }
+
+  SECTION("term_1d - div") {
+    term_1d<TestType> ptD = term_div<TestType>{flux_type::upwind, boundary_type::dirichlet, mhs};
+    REQUIRE_FALSE(ptD.is_identity());
+    REQUIRE(ptD.is_div());
+    REQUIRE(ptD.optype() == operation_type::div);
+    REQUIRE(ptD.flux() == flux_type::upwind);
+    std::vector<TestType> x = {1, 2, 3}, fx(3);
+    ptD.rhs(x, fx);
+    REQUIRE(fm::diff_inf(fx, std::vector<TestType>{2, 4, 6}) == 0);
+  }
+
+  SECTION("term_1d - grad") {
+    term_1d<TestType> ptG = term_grad<TestType>{flux_type::downwind, boundary_type::free, mhs};
+    REQUIRE_FALSE(ptG.is_identity());
+    REQUIRE(ptG.is_grad());
+    REQUIRE(ptG.optype() == operation_type::grad);
+    REQUIRE(ptG.flux() == flux_type::upwind); // grad swaps the fluxes
+    std::vector<TestType> x = {-1, 5, 2}, fx(3);
+    ptG.rhs()(x, fx);
+    REQUIRE(fm::diff_inf(fx, std::vector<TestType>{-2, 10, 4}) == 0);
+  }
+
+  SECTION("term_1d - chain 1 term") {
+    term_1d<TestType> ptD = term_div<TestType>{flux_type::upwind, boundary_type::periodic, 1};
+    term_1d<TestType> chain({ptD, });
+    REQUIRE_FALSE(chain.is_identity());
+    REQUIRE_FALSE(chain.is_chain());
+    REQUIRE(chain.is_div());
+    REQUIRE(chain.num_chain() == 0);
+  }
+
+  SECTION("term_1d - 2 terms") {
+    term_1d<TestType> ptI;
+    REQUIRE(term_1d<TestType>({ptI, ptI}).is_identity());
+    REQUIRE_FALSE(term_1d<TestType>({ptI, ptI}).is_chain());
+    REQUIRE(term_1d<TestType>({ptI, ptI}).num_chain() == 0);
+
+    term_1d<TestType> ptD = term_div<TestType>{flux_type::upwind, boundary_type::dirichlet, mhs};
+    term_1d<TestType> ptG = term_div<TestType>{flux_type::downwind, boundary_type::dirichlet, mhs};
+
+    REQUIRE_FALSE(term_1d<TestType>({ptI, ptD}).is_chain());
+    REQUIRE(term_1d<TestType>({ptI, ptD}).is_div());
+    REQUIRE_FALSE(term_1d<TestType>({ptD, ptI}).is_chain());
+    REQUIRE(term_1d<TestType>({ptD, ptI}).is_div());
+
+    REQUIRE(term_1d<TestType>({ptD, ptG}).is_chain());
+    REQUIRE(term_1d<TestType>({ptD, ptG}).num_chain() == 2);
+
+    REQUIRE_THROWS_WITH(term_1d<TestType>({ptD, ptD}),
+                        "incompatible flux combination used in a term_1d chain, must split into a term_md chain");
+  }
+
+  SECTION("term_1d - extra") {
+    term_1d<TestType> ptI;
+    term_1d<TestType> ptM = term_mass<TestType>(3);
+    term_1d<TestType> ptD = term_div<TestType>{flux_type::upwind, boundary_type::dirichlet, mhs};
+    term_1d<TestType> ptG = term_grad<TestType>{flux_type::downwind, boundary_type::dirichlet, mhs};
+    term_1d<TestType> ptGc = term_grad<TestType>{flux_type::central, boundary_type::dirichlet, 3.5};
+
+    REQUIRE(term_1d<TestType>({ptI, ptD, ptM}).num_chain() == 2);
+    REQUIRE(term_1d<TestType>({ptG, ptI, ptM, ptD, ptM}).num_chain() == 4);
+    REQUIRE(term_1d<TestType>({ptGc, ptM}).num_chain() == 2);
+
+    REQUIRE_THROWS_WITH(term_1d<TestType>({ptGc, ptD}),
+                        "incompatible flux combination used in a term_1d chain, must split into a term_md chain");
+
+    term_1d<TestType> chain({ptI, ptG, ptM, ptD, ptM});
+    REQUIRE(chain[0].optype() == operation_type::grad);
+    REQUIRE(chain.chain()[1].optype() == operation_type::mass);
+    REQUIRE(chain.chain(2).optype() == operation_type::div);
+    REQUIRE(chain[3].optype() == operation_type::mass);
+  }
+
+  SECTION("term_md") {
+    term_1d<TestType> ptI = term_identity{};
+    term_1d<TestType> ptM = term_mass<TestType>{3.5};
+
+    REQUIRE(term_md<TestType>({ptM, ptI}).num_dims() == 2);
+    REQUIRE(term_md<TestType>({ptM, ptI}).term_mode() == term_md<TestType>::mode::separable);
+
+    REQUIRE_THROWS_WITH(term_md<TestType>({ptI, ptI}),
+                        "cannot create term_md with all terms being identities");
+
+    term_md<TestType> t1({ptM, ptI});
+    REQUIRE(term_md<TestType>({t1, t1}).term_mode() == term_md<TestType>::mode::chain);
+    REQUIRE(term_md<TestType>({t1, t1}).num_dims() == 2);
+    REQUIRE(term_md<TestType>({t1, t1, t1}).num_chain() == 3);
+
+    term_md<TestType> t2({ptI, ptI, ptM});
+    REQUIRE(term_md<TestType>({t2, t2}).num_dims() == 3);
+    REQUIRE_THROWS_WITH(term_md<TestType>({t1, t2}),
+                        "inconsistent dimension of terms in the chain");
+
+    std::vector<term_1d<TestType>> ptc = {ptI, ptI, ptI};
+    for (int i = 0; i < 3; i++)
+    {
+      ptc[i] = ptM;
+      term_md<TestType> tm(ptc);
+      REQUIRE(tm.num_dims() == 3);
+      REQUIRE(tm.term_mode() == term_md<TestType>::mode::separable);
+      ptc[i] = ptI;
+    }
+
   }
 }
 
-TEST_CASE("compile time testing", "[main]")
+TEMPLATE_TEST_CASE("pde v2", "[pde]", test_precs)
 {
-
-#ifdef ASGARD_ENABLE_DOUBLE
-  test_compile<double>();
-#endif
-
-#ifdef ASGARD_ENABLE_FLOAT
-  test_compile<float>();
-#endif
-
-  REQUIRE(true);
+  SECTION("constructors")
+  {
+    PDEv2<TestType> empty_pde;
+    REQUIRE_FALSE(empty_pde);
+    prog_opts opts;
+    opts.degree = 4;
+    opts.start_levels = {3,};
+    pde_domain<TestType> domain({{1, 3}, {-1, 6}});
+    PDEv2<TestType> pde(opts, std::move(domain));
+    REQUIRE(!!pde);
+    REQUIRE(pde.domain().length(1) == TestType{7});
+    REQUIRE(!!pde.options().degree);
+    REQUIRE(pde.options().degree.value() == 4);
+  }
 }
 
 template<typename P>
@@ -180,136 +312,6 @@ TEMPLATE_TEST_CASE("testing diffusion 1 implementations", "[pde]", test_precs)
   }
 
   SECTION("diffusion 1 dt")
-  {
-    auto filename = base_dir.filename().string();
-    TestType const gold =
-        read_scalar_from_txt_file(pde_base_dir / (filename + "dt.dat"));
-    TestType const dt = pde->get_dt() / 0.01;
-    REQUIRE(dt == gold);
-  }
-}
-
-TEMPLATE_TEST_CASE("testing contuinity 1 implementations", "[pde]", test_precs)
-{
-  auto const pde               = make_PDE<TestType>("-p continuity_1");
-  auto const base_dir          = pde_base_dir / "continuity_1_";
-  fk::vector<TestType> const x = {0.1, 0.2, 0.3, 0.4, 0.5};
-  TestType const time          = 5;
-
-  SECTION("continuity 1 initial condition functions")
-  {
-    test_initial_condition<TestType>(*pde, base_dir, x);
-  }
-
-  SECTION("continuity 1 exact solution functions")
-  {
-    test_exact_solution<TestType>(*pde, base_dir, x, time);
-  }
-
-  SECTION("continuity 1 source functions")
-  {
-    test_source_vectors(*pde, base_dir, x, time);
-  }
-
-  SECTION("continuity 1 dt")
-  {
-    auto filename = base_dir.filename().string();
-    TestType const gold =
-        read_scalar_from_txt_file(pde_base_dir / (filename + "dt.dat"));
-    TestType const dt = pde->get_dt() / 0.01;
-    REQUIRE(dt == gold);
-  }
-}
-
-TEMPLATE_TEST_CASE("testing contuinity 2 implementations, level 5, degree 3",
-                   "[pde]", test_precs)
-{
-  auto const pde    = make_PDE<TestType>("-p continuity_2 -l 5 -d 3");
-  auto const base_dir          = pde_base_dir / "continuity2_";
-  fk::vector<TestType> const x = {0.1, 0.2, 0.3, 0.4, 0.5};
-  TestType const time          = 5;
-
-  SECTION("continuity 2 initial condition functions")
-  {
-    test_initial_condition<TestType>(*pde, base_dir, x);
-  }
-
-  SECTION("continuity 2 exact solution functions")
-  {
-    test_exact_solution<TestType>(*pde, base_dir, x, time);
-  }
-
-  SECTION("continuity 2 source functions")
-  {
-    test_source_vectors(*pde, base_dir, x, time);
-  }
-
-  SECTION("continuity 2 dt")
-  {
-    auto filename = base_dir.filename().string();
-    TestType const gold =
-        read_scalar_from_txt_file(pde_base_dir / (filename + "dt.dat"));
-    TestType const dt = pde->get_dt() / 0.01;
-    REQUIRE(dt == gold);
-  }
-}
-
-TEMPLATE_TEST_CASE("testing continuity 3 implementations", "[pde]", test_precs)
-{
-  auto const pde    = make_PDE<TestType>("-p continuity_3 -l 5 -d 3");
-  auto const base_dir          = pde_base_dir / "continuity_3_";
-  fk::vector<TestType> const x = {0.1, 0.2, 0.3, 0.4, 0.5};
-  TestType const time          = 5;
-
-  SECTION("continuity 3 initial condition functions")
-  {
-    test_initial_condition<TestType>(*pde, base_dir, x);
-  }
-
-  SECTION("continuity 3 exact solution functions")
-  {
-    test_exact_solution<TestType>(*pde, base_dir, x, time);
-  }
-
-  SECTION("continuity 3 source functions")
-  {
-    test_source_vectors(*pde, base_dir, x, time);
-  }
-
-  SECTION("continuity 3 dt")
-  {
-    auto filename = base_dir.filename().string();
-    TestType const gold =
-        read_scalar_from_txt_file(pde_base_dir / (filename + "dt.dat"));
-    TestType const dt = pde->get_dt() / 0.01;
-    REQUIRE(dt == gold);
-  }
-}
-
-TEMPLATE_TEST_CASE("testing continuity 6 implementations", "[pde]", test_precs)
-{
-  //auto const level    = 3;
-  auto const pde      = make_PDE<TestType>("-p continuity_6 -l 3");
-  auto const base_dir = pde_base_dir / "continuity_6_";
-  fk::vector<TestType> const x = {0.1, 0.2, 0.3, 0.4, 0.5};
-  TestType const time          = 5;
-
-  SECTION("continuity 6 initial condition functions")
-  {
-    test_initial_condition<TestType>(*pde, base_dir, x);
-  }
-
-  SECTION("continuity 6 exact solution functions")
-  {
-    test_exact_solution<TestType>(*pde, base_dir, x, time);
-  }
-
-  SECTION("continuity 6 source functions")
-  {
-    test_source_vectors(*pde, base_dir, x, time);
-  }
-
-  SECTION("continuity 6 dt")
   {
     auto filename = base_dir.filename().string();
     TestType const gold =

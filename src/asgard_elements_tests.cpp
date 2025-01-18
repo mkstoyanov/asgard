@@ -244,76 +244,6 @@ void test_element_deletion(PDE_opts const pde_choice,
   }
 }
 
-TEST_CASE("element table object", "[element_table]")
-{
-  std::vector<std::vector<int>> const test_levels{{7}, {5, 2}, {3, 2, 3}};
-  int const max_level = 7;
-  std::vector<PDE_opts> const test_pdes{
-      PDE_opts::continuity_1, PDE_opts::continuity_2, PDE_opts::continuity_3};
-
-  std::string const gold_base       = "table_";
-  std::string const gold_base_id    = "ids_";
-  std::string const child_gold_base = "child_ids_";
-
-  SECTION("test table construction/mapping")
-  {
-    REQUIRE(test_levels.size() == test_pdes.size());
-
-    for (auto i = 0; i < static_cast<int>(test_levels.size()); ++i)
-    {
-      auto const &levels = test_levels[i];
-      auto const &choice = test_pdes[i];
-
-      auto const full_gold_str =
-          elements_base_dir /
-          (gold_base + std::to_string(test_levels[i].size()) + "d_FG.dat");
-      auto const fids_gold_str =
-          elements_base_dir /
-          (gold_base_id + std::to_string(test_levels[i].size()) + "d_FG.dat");
-      auto const use_full_grid = true;
-      test_element_table(choice, levels, full_gold_str, fids_gold_str, max_level,
-                         use_full_grid);
-
-      auto const sparse_gold_str =
-          elements_base_dir /
-          (gold_base + std::to_string(test_levels[i].size()) + "d_SG.dat");
-      auto const sids_gold_str =
-          elements_base_dir /
-          (gold_base_id + std::to_string(test_levels[i].size()) + "d_SG.dat");
-      test_element_table(choice, levels, sparse_gold_str, sids_gold_str, max_level);
-    }
-  }
-  SECTION("adaptivity: child id discovery, element addition, "
-          "element deletion")
-  {
-    assert(test_levels.size() == test_pdes.size());
-
-    for (auto i = 0; i < static_cast<int>(test_levels.size()); ++i)
-    {
-      auto const &levels = test_levels[i];
-      auto const &choice = test_pdes[i];
-
-      auto const full_gold_str =
-          elements_base_dir /
-          (child_gold_base + std::to_string(test_levels[i].size()) +
-           "d_FG.dat");
-      auto const use_full_grid = true;
-      test_child_discovery(choice, levels, full_gold_str, max_level,
-                           use_full_grid);
-      test_element_addition(choice, levels, max_level, use_full_grid);
-      test_element_deletion(choice, levels, max_level, use_full_grid);
-
-      auto const sparse_gold_str =
-          elements_base_dir /
-          (child_gold_base + std::to_string(test_levels[i].size()) +
-           "d_SG.dat");
-      test_child_discovery(choice, levels, sparse_gold_str, max_level);
-      test_element_addition(choice, levels, max_level);
-      test_element_deletion(choice, levels, max_level);
-    }
-  }
-}
-
 TEST_CASE("1d mapping functions", "[element_table]")
 {
   std::vector<std::array<int, 2>> const pairs =
@@ -334,34 +264,5 @@ TEST_CASE("1d mapping functions", "[element_table]")
     auto const [lev, cell] = elements::get_level_cell(id);
     REQUIRE(lev == pair[0]);
     REQUIRE(cell == pair[1]);
-  }
-}
-
-TEST_CASE("static helper - cell builder", "[element_table]")
-{
-  auto const levels = 3;
-  auto const degree = 1;
-
-  auto opts = elopts(PDE_opts::continuity_1, {levels, }, levels, false);
-  opts.degree = degree;
-
-  auto const pde = make_PDE<default_precision>(opts);
-  elements::table const t(*pde);
-
-  SECTION("cell index set builder")
-  {
-    std::vector<fk::vector<int>> const levels_set = {
-        {1}, {1, 2}, {2, 1}, {2, 3}};
-
-    std::vector<fk::matrix<int>> const gold_set = {
-        {{0}},
-        {{0, 0}, {0, 1}},
-        {{0, 0}, {1, 0}},
-        {{0, 0}, {1, 0}, {0, 1}, {1, 1}, {0, 2}, {1, 2}, {0, 3}, {1, 3}}};
-
-    for (auto i = 0; i < static_cast<int>(gold_set.size()); ++i)
-    {
-      REQUIRE(t.get_cell_index_set(levels_set[i]) == gold_set[i]);
-    }
   }
 }

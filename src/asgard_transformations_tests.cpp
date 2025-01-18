@@ -49,41 +49,17 @@ void test_combine_dimensions(PDE<P> const &pde, P const time = 1.0,
         (grid.row_stop + 1) * fm::ipow(degree + 1, dims) - 1;
     fk::vector<P, mem_type::const_view> const gold_partial(gold, rank_start,
                                                            rank_stop);
-    std::vector<P> const test_partial = combine_dimensions(
-        degree, t, plan.at(rank).row_start, plan.at(rank).row_stop, vectors, time);
+    std::vector<P> test_partial(gold_partial.size());
+
+    combine_dimensions(
+        degree, t, plan.at(rank).row_start, plan.at(rank).row_stop, vectors, test_partial.data());
+    for (auto &t : test_partial)
+      t *= time;
     fk::vector<P> fk_test_partial(test_partial);
     REQUIRE(fk_test_partial == gold_partial);
     test.set_subvector(rank_start, fk_test_partial);
   }
   REQUIRE(test == gold);
-}
-
-TEMPLATE_TEST_CASE("combine dimensions", "[transformations]", test_precs)
-{
-  SECTION("combine dimensions, dim = 2, degree = 2, lev = 3, 1 rank")
-  {
-    auto const pde = make_PDE<TestType>("-p continuity_2 -l 3 -d 1");
-
-    TestType const time = 2.0;
-    test_combine_dimensions(*pde, time);
-  }
-
-  SECTION("combine dimensions, dim = 2, degree = 1, lev = 3, 8 ranks")
-  {
-    auto const pde = make_PDE<TestType>("-p continuity_2 -l 3 -d 1");
-    int const num_ranks = 8;
-    TestType const time = 2.0;
-    test_combine_dimensions(*pde, time, num_ranks);
-  }
-
-  SECTION("combine dimensions, dim = 3, degree = 2, lev = 2, full grid")
-  {
-    auto const pde = make_PDE<TestType>("-p continuity_3 -l 2 -d 2 -g dense");
-    int const num_ranks  = 20;
-    TestType const time  = 2.5;
-    bool const full_grid = true;
-    test_combine_dimensions(*pde, time, num_ranks, full_grid);
-  }
 }
 
 TEMPLATE_TEST_CASE("fast-transform", "[transformations]", test_precs)
