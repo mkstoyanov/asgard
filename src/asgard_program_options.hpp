@@ -61,6 +61,20 @@ enum class solve_opts
 
 /*!
  * \ingroup asgard_common_options
+ * \brief the available preconditioners for the solvers
+ */
+enum class preconditioner_opts
+{
+  //! probably not a good idea for an iterative solve
+  none = 0,
+  //! diagonal Jacobi preconditioner
+  jacobi,
+  //! using alternating direction pseudoinverse (experimental)
+  adi
+};
+
+/*!
+ * \ingroup asgard_common_options
  * \brief list of builtin PDE specifications, refer to the specs in the src/pde folder
  */
 enum class PDE_opts
@@ -140,8 +154,14 @@ enum class data_mode
 {
   //! repalce/overwrite the current data
   replace,
-  //! increment the current data, i.e., +=
-  increment
+  //! scale and overwrite, e.g., y = alpha * x
+  scal_rep,
+  //! increment the current data, e.g., y += x
+  increment,
+  //! scale and increment data, e.g., y += alpha * x
+  scal_inc,
+  //! multiply, e.g., y *= x
+  multiply
 };
 #endif
 
@@ -167,8 +187,12 @@ namespace time_advance
  */
 enum class method
 {
+  //! Runge Kutta 3-stage method, 4th order accuracy
+  rk3 = 0,
+  //! Implicit Crank-Nicolson, second order
+  cn,
   //! implicit solve, backward Euler
-  imp = 0,
+  imp,
   //! (default) explicit Runge–Kutta
   exp, // explicit is reserved keyword
   //! implicit-explicit scheme for nonlinear Vlasov-Poisson problems
@@ -188,7 +212,7 @@ enum adapt_norm
   linf
 };
 
-namespace solver
+namespace solvers
 {
 #ifndef __ASGARD_DOXYGEN_SKIP
 /*!
@@ -399,12 +423,14 @@ struct prog_opts
 
   //! solver for implicit or imex methods: direct, gmres, bicgstab
   std::optional<solve_opts> solver;
+  //! preconditioner, used for iterative solvers
+  std::optional<preconditioner_opts> precon;
   //! tolerance for the iterative solvers (gmres, bicgstab)
   std::optional<double> isolver_tolerance;
   //! max number of iterations (inner iterations for gmres)
   std::optional<int> isolver_iterations;
   //! max number of output gmres iterations
-  std::optional<int> isolver_outer_iterations;
+  std::optional<int> isolver_inner_iterations;
 
   //! local kron method only, mode dense or sparse (faster but memory hungry)
   std::optional<kronmult_mode> kron_mode;
@@ -594,6 +620,18 @@ struct prog_opts
   std::optional<double> default_dt;
   //! used in place of stop time, if stop time is not provided
   std::optional<double> default_stop_time;
+  //! used in place of the step method, if step method is provided
+  std::optional<time_advance::method> default_step_method;
+  //! used in place of the solver type, if solver type is not provided
+  std::optional<solve_opts> default_solver;
+  //! used in place of the preconditioner type, if preconditioner is not specified
+  std::optional<preconditioner_opts> default_precon;
+  //! used in place of the tolerance, if tolerance is not specified
+  std::optional<double> default_isolver_tolerance;
+  //! max number of iterations (inner iterations for gmres)
+  std::optional<int> default_isolver_iterations;
+  //! max number of outer gmres iterations
+  std::optional<int> default_isolver_inner_iterations;
 
   //! returns the first available from stop-time, default-stop-time or -1
   double get_stop_time() const { return stop_time.value_or(default_stop_time.value_or(-1)); }
@@ -646,11 +684,12 @@ private:
     dt,
     pde_choice,
     solver,
+    precond,
     memory_limit,
     kron_mode,
     isol_tolerance,
     isol_iterations,
-    isol_outer_iterations,
+    isol_inner_iterations,
     restart_file,
     set_verbosity
   };

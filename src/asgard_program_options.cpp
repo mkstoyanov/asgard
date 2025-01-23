@@ -76,9 +76,11 @@ Options          Short   Value      Description
                                     to override adaptivity set in an input file or restart file.
 
 <<< time stepping options >>>
--step-method     -s      string     accepts: expl/impl/imex
+-step-method     -s      string     accepts (v1): expl/impl/imex
+                                    accepts (v2): rk3/cn
                                     indicates explicit (rk3), explicit (backward-Euler) or
-                                    imex (implicit-explicit) time-stepping scheme.
+                                    imex (implicit-explicit) time-stepping scheme
+                                    implicit crank-nicolson (cn)
 -time            -t      double     accepts: positive number (zero for no stepping)
                                     Final time for integration (v2 pdes only)
 -num-steps       -n      int        Positive integer indicating the number of time steps to take.
@@ -104,10 +106,16 @@ Options          Short   Value      Description
                                     Direct: use LAPACK, expensive but stable.
                                     GMRES: general but sensitive to restart selection.
                                     bicgstab: cheaper alternative to GMRES
+-precon          -pc     string     accepts: none/jacobi/adi (iterative solvers only)
+                                    specifies the preconditioner for the iterative method
+                                    none - is not advisable as it takes too long
+                                    jacobi - preconditioner that applies basic rescaling
+                                    adi - very experimental, not very stable (yet)
 -isolve-tol      -ist    double     Iterative solver tolerance, applies to GMRES and BICG.
--isolve-iter     -isi    double     Iterative solver maximum number of iterations,
-                                    for GMRES this is the number of inner iterations.
--isolve-outer    -iso    double     (GMRES only) The maximum number of outer GMRES iterations.
+-isolve-iter     -isi    int        Iterative solver maximum number of iterations,
+                                    for GMRES this is the number of outer iterations.
+-isolve-inner    -isn    int        (GMRES only) The maximum number of inner GMRES iterations,
+                                    this is ignored by BiCGSTAB.
 
 Leaving soon:
 -memory                  int        Memory limit for the GPU, applied to the earlier versions
@@ -210,12 +218,13 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv,
       {"-time", optentry::stop_time}, {"-t", optentry::stop_time},
       {"-available-pdes", optentry::pde_help},
       {"-solver", optentry::solver}, {"-sv", optentry::solver},
+      {"-precon", optentry::precond}, {"-pc", optentry::precond},
       {"-memory", optentry::memory_limit},
       {"-kron-mode", optentry::kron_mode},
       {"-isolve-tol", optentry::isol_tolerance}, {"-ist", optentry::isol_tolerance},
       {"-isolve-iter", optentry::isol_iterations}, {"-isi", optentry::isol_iterations},
-      {"-isolve-outer", optentry::isol_outer_iterations},
-      {"-iso", optentry::isol_outer_iterations},
+      {"-isolve-inner", optentry::isol_inner_iterations},
+      {"-isn", optentry::isol_inner_iterations},
       {"-restart", optentry::restart_file},
   };
 
@@ -329,7 +338,11 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv,
       auto selected = move_process_next();
       if (not selected)
         throw std::runtime_error(report_no_value());
-      if (*selected == "expl")
+      if (*selected == "rk3")
+        step_method = time_advance::method::rk3;
+      else if (*selected == "cn")
+        step_method = time_advance::method::cn;
+      else if (*selected == "expl")
         step_method = time_advance::method::exp;
       else if (*selected == "impl")
         step_method = time_advance::method::imp;
@@ -479,6 +492,21 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv,
         throw std::runtime_error(report_wrong_value());
     }
     break;
+    case optentry::precond: {
+      // if we get more preconditioners we may switch to a map
+      auto selected = move_process_next();
+      if (not selected)
+        throw std::runtime_error(report_no_value());
+      if (*selected == "none")
+        precon = preconditioner_opts::none;
+      else if (*selected == "jacobi")
+        precon = preconditioner_opts::jacobi;
+      else if (*selected == "adi")
+        precon = preconditioner_opts::adi;
+      else
+        throw std::runtime_error(report_wrong_value());
+    }
+    break;
     case optentry::memory_limit: {
       auto selected = move_process_next();
       if (not selected)
@@ -531,12 +559,12 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv,
       }
     }
     break;
-    case optentry::isol_outer_iterations: {
+    case optentry::isol_inner_iterations: {
       auto selected = move_process_next();
       if (not selected)
         throw std::runtime_error(report_no_value());
       try {
-        isolver_outer_iterations = std::stoi(selected->data());
+        isolver_inner_iterations = std::stoi(selected->data());
       } catch(std::invalid_argument &) {
         throw std::runtime_error(report_wrong_value());
       } catch(std::out_of_range &) {
@@ -761,6 +789,12 @@ void prog_opts::print_options(std::ostream &os) const
   if (step_method)
     switch (step_method.value())
     {
+    case time_advance::method::rk3:
+      os << "  method: RK3\n";
+      break;
+    case time_advance::method::cn:
+      os << "  method: Crank-Nicolson\n";
+      break;
     case time_advance::method::imex:
       os << "  method: IMEX\n";
       break;

@@ -141,7 +141,7 @@ void write_output(PDE<P> const &pde, // std::vector<moment<P>> const &moments,
 
   H5Easy::dump(file, "isolver_tolerance", options.isolver_tolerance.value());
   H5Easy::dump(file, "isolver_iterations", options.isolver_iterations.value());
-  H5Easy::dump(file, "isolver_outer_iterations", options.isolver_outer_iterations.value());
+  H5Easy::dump(file, "isolver_inner_iterations", options.isolver_inner_iterations.value());
 
   // save some basic build info
   H5Easy::dump(file, "GIT_BRANCH", std::string(GIT_BRANCH));
@@ -275,6 +275,13 @@ void h5writer<P>::write(PDEv2<P> const &pde, int degree, sparse_grid const &grid
     H5Easy::dump(file, "dtime_time", dtime.time_);
     H5Easy::dump(file, "dtime_step", dtime.step_);
     H5Easy::dump(file, "dtime_remaining", dtime.num_remain_);
+  }
+
+  { // solver data section
+    H5Easy::dump(file, "solver_method", static_cast<int>(options.solver.value_or(solve_opts::direct)));
+    H5Easy::dump(file, "solver_itol", options.isolver_tolerance.value_or(-1));
+    H5Easy::dump(file, "solver_iter", options.isolver_iterations.value_or(-1));
+    H5Easy::dump(file, "solver_inner", options.isolver_inner_iterations.value_or(-1));
   }
 
   H5Easy::dump(file, "timer_report", tools::timer.report());
@@ -485,6 +492,26 @@ void h5writer<P>::read(std::string const &filename, bool silent, PDEv2<P> &pde,
         if (adapt > 0) // if negative, then adaptivity was never set to begind with
           pde.options_.adapt_threshold = adapt;
       }
+    }
+  }
+
+  { // solver data section
+    if (not pde.options_.solver)
+      pde.options_.solver = static_cast<solve_opts>(H5Easy::load<int>(file, "solver_method"));
+    if (not pde.options_.isolver_tolerance) {
+      pde.options_.isolver_tolerance = H5Easy::load<double>(file, "solver_itol");
+      if (pde.options_.isolver_tolerance.value() < 0)
+        pde.options_.isolver_tolerance = pde.options_.default_isolver_tolerance;
+    }
+    if (not pde.options_.isolver_iterations) {
+      pde.options_.isolver_iterations = H5Easy::load<int>(file, "solver_iter");
+      if (pde.options_.isolver_iterations.value() < 0)
+        pde.options_.isolver_iterations = pde.options_.default_isolver_iterations;
+    }
+    if (not pde.options_.isolver_inner_iterations) {
+      pde.options_.isolver_inner_iterations = H5Easy::load<int>(file, "solver_inner");
+      if (pde.options_.isolver_inner_iterations.value() < 0)
+        pde.options_.isolver_inner_iterations = pde.options_.default_isolver_inner_iterations;
     }
   }
 

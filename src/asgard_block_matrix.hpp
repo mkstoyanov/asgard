@@ -9,6 +9,70 @@ using function_1d = std::function<void(std::vector<P> const &, std::vector<P> &)
 
 /*!
  * \internal
+ * \brief Stores a matrix in regular (non-block) column major format
+ *
+ * Stores a regular matrix and possibly the PLU factors.
+ * \endinternal
+ */
+template<typename P>
+class dense_matrix
+{
+public:
+  //! creates an empty matrix
+  dense_matrix() = default;
+  //! create a matrix with the given number of rows and columns
+  dense_matrix(int64_t rows, int64_t cols)
+      : nrows_(rows), ncols_(cols), data_(nrows_ * ncols_)
+  {}
+
+  //! number of rows
+  int64_t nrows() const { return nrows_; }
+  //! number of columns
+  int64_t ncols() const { return ncols_; }
+
+  //! returns a ref to the entry
+  P &operator() (int64_t r, int64_t c) { return data_[c * nrows_ + r]; }
+  //! returns a const-ref to the entry
+  P const &operator() (int64_t r, int64_t c) const { return data_[c * nrows_ + r]; }
+  //! returns pointer to the internal data
+  P *data() { return data_.data(); }
+  //! returns pointer to the internal data
+  P const *data() const { return data_.data(); }
+
+  //! returns pointer to the internal data at the given row-column
+  P *data(int64_t r, int64_t c) { return &data_[c * nrows_ + r]; }
+  //! returns pointer to the internal data at the given row-column
+  P const *data(int64_t r, int64_t c) const { return &data_[c * nrows_ + r]; }
+
+  //! shows if the matrix has been factorized
+  bool is_factorized() const { return (not ipiv.empty()); }
+  //! factorize the matrix using plu
+  void factorize();
+
+  //! check whether the matrix has been set
+  operator bool () const { return (nrows_ > 0); }
+
+  //! applies the inverse of the matrix to the provided vector
+  void solve(std::vector<P> &b) const;
+
+  //! (testing) writes the the matric to the scream
+  void print(std::ostream &os = std::cout) {
+    for (int64_t r = 0; r < nrows_; r++) {
+      for (int64_t c = 0; c < nrows_; c++)
+        os << std::setw(16) << data_[c * nrows_ + r];
+      os << '\n';
+    }
+  }
+
+private:
+  int64_t nrows_ = 0;
+  int64_t ncols_ = 0;
+  std::vector<P> data_;
+  std::vector<int> ipiv;
+};
+
+/*!
+ * \internal
  * \brief Stores a matrix in block format
  *
  * The entries of each block are stored contiguously in memory and logically
@@ -42,9 +106,9 @@ public:
   P const *operator() (int64_t i, int64_t j) const { return data_[j * nrows_ + i]; }
 
   //! returns the raw internal data
-  P *data() { return data_.data(); }
+  P *data() { return data_[0]; }
   //! returns the raw internal data, const-overload
-  P const *data() const { return data_.data(); }
+  P const *data() const { return data_[0]; }
 
   //! fill with single entry
   void fill(P v) { std::fill_n(data_[0], data_.total_size(), v); }
@@ -126,6 +190,7 @@ public:
     os << '\n';
   }
 
+  //! returns the l-inf max norm between the two matrices
   P max_diff(block_matrix<P> const &other) {
     expect(nrows_ == other.nrows_);
     expect(ncols_ == other.ncols_);
@@ -139,10 +204,26 @@ public:
     return err;
   }
 
+  //! convert the matrix to dense matrix
+  dense_matrix<P> to_dense_matrix(int const n) const
+  {
+    expect(n * n == data_.stride());
+    dense_matrix<P> mat(n * nrows_, n * ncols_);
+    for (int r = 0; r < nrows_; r++)
+      for (int c = 0; c < ncols_; c++)
+        for (int k = 0; k < n; k++)
+          std::copy_n(data_[c * nrows_ + r] + n * k , n, mat.data(n * r, n * c + k));
+    return mat;
+  }
+
 private:
   int64_t nrows_, ncols_;
   vector2d<P> data_;
 };
+
+//! C += A * B
+template<typename P>
+void gemm1(int const n, block_matrix<P> const &A, block_matrix<P> const &B, block_matrix<P> &C);
 
 //! convert larger fk::matrix to block_matrix given the number of blocks and columns
 template<typename P, mem_type mem>
@@ -529,6 +610,7 @@ public:
   }
   //! (testing) fill the matrix with a value
   void fill(P v) { data_.fill(v); }
+
 private:
   connect_1d::hierarchy htype_ = connect_1d::hierarchy::volume;
   vector2d<P> data_;
@@ -565,6 +647,19 @@ void gemm_block_tri_ul(int const n, block_tri_matrix<P> const &A, block_tri_matr
 template<typename P>
 void gemm_block_tri_lu(int const n, block_tri_matrix<P> const &A, block_tri_matrix<P> const &B,
                        block_tri_matrix<P> &C);
+
+/*!
+ * \internal
+ * \brief Multiply block-tri-diagonal matrices
+ *
+ * The assumption is that the matrices are upper and lower tri-diagonal but it is unclear
+ * which is which. Thus, the algorithm multiplies the matrices but ignores the entries
+ * outside of the three diagonals.
+ * \endinternal
+ */
+template<typename P>
+void gemm_block_tri(int const n, block_tri_matrix<P> const &A, block_tri_matrix<P> const &B,
+                    block_tri_matrix<P> &C);
 
 /*!
  * \internal
@@ -621,5 +716,42 @@ void invert_mass(int const n, mass_matrix<P> const &mass, block_diag_matrix<P> &
  */
 template<typename P>
 void invert_mass(int const n, mass_matrix<P> const &mass, P x[]);
+
+/*!
+ * \internal
+ * \brief Overwrites A with (I + alpha * A)
+ *
+ * \endinternal
+ */
+template<typename P>
+void to_euler(int const n, P alpha, block_diag_matrix<P> &A);
+
+/*!
+ * \internal
+ * \brief Overwrites A with (I + alpha * A)
+ *
+ * \endinternal
+ */
+template<typename P>
+void to_euler(int const n, P alpha, block_tri_matrix<P> &A);
+
+/*!
+ * \internal
+ * \brief Destroys the content in A and forms approximate inverse of A, similar to ILU
+ *
+ * \endinternal
+ */
+template<typename P>
+void psedoinvert(int const n, block_tri_matrix<P> &A,
+                 block_tri_matrix<P> &iA);
+/*!
+ * \internal
+ * \brief Destroys the content in A and forms the inverse of A
+ *
+ * \endinternal
+ */
+template<typename P>
+void psedoinvert(int const n, block_diag_matrix<P> &A,
+                 block_diag_matrix<P> &iA);
 
 } // namespace asgard

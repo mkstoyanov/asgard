@@ -1,6 +1,8 @@
 #include "asgard_solver.hpp"
 
-namespace asgard::solver
+#include "asgard_small_mats.hpp"
+
+namespace asgard::solvers
 {
 template<typename P>
 class dense_preconditioner
@@ -70,7 +72,7 @@ simple_gmres(fk::matrix<P> const &A, fk::vector<P> &x, fk::vector<P> const &b,
 // simple, node-local test version
 template<typename P>
 gmres_info<P>
-bicgstab(fk::matrix<P> const &A, fk::vector<P> &x, fk::vector<P> const &b,
+simple_bicgstab(fk::matrix<P> const &A, fk::vector<P> &x, fk::vector<P> const &b,
          fk::matrix<P> const &M, int const max_iter,
          P const tolerance)
 {
@@ -80,13 +82,13 @@ bicgstab(fk::matrix<P> const &A, fk::vector<P> &x, fk::vector<P> const &b,
         fm::gemv(A, x_in, y, false, alpha, beta);
       };
   if (M.size() > 0)
-    return bicgstab(dense_matrix_wrapper, fk::vector<P, mem_type::view>(x),
-                    b, dense_preconditioner(M), max_iter,
-                    tolerance);
+    return simple_bicgstab(dense_matrix_wrapper, fk::vector<P, mem_type::view>(x),
+                           b, dense_preconditioner(M), max_iter,
+                           tolerance);
   else
-    return bicgstab(dense_matrix_wrapper, fk::vector<P, mem_type::view>(x),
-                    b, no_op_preconditioner<P>(), max_iter,
-                    tolerance);
+    return simple_bicgstab(dense_matrix_wrapper, fk::vector<P, mem_type::view>(x),
+                           b, no_op_preconditioner<P>(), max_iter,
+                           tolerance);
 }
 
 // preconditiner is only available in global mode
@@ -141,7 +143,7 @@ bicgstab_euler(const P dt, imex_flag imex,
 {
   auto const &pc = ops.template get_diagonal_preconditioner<resrc>();
 
-  return bicgstab(
+  return simple_bicgstab(
     [&](P const alpha, fk::vector<P, mem_type::view, resrc> const x_in,
           P const beta, fk::vector<P, mem_type::view, resrc> y) -> void {
         tools::time_event performance("kronmult - implicit", ops.flops(imex));
@@ -337,10 +339,10 @@ simple_gmres(matrix_abstraction mat, fk::vector<P, mem_type::view, resrc> x,
 template<typename P, resource resrc, typename matrix_abstraction,
          typename preconditioner_abstraction>
 gmres_info<P>
-bicgstab(matrix_abstraction mat, fk::vector<P, mem_type::view, resrc> x,
-         fk::vector<P, mem_type::owner, resrc> const &b,
-         preconditioner_abstraction precondition,
-         int max_iter, P tol)
+simple_bicgstab(matrix_abstraction mat, fk::vector<P, mem_type::view, resrc> x,
+                fk::vector<P, mem_type::owner, resrc> const &b,
+                preconditioner_abstraction precondition,
+                int max_iter, P tol)
 {
   if (tol <= notolerance + std::numeric_limits<P>::epsilon())
     tol = std::is_same_v<float, P> ? 1e-6 : 1e-12;
@@ -505,14 +507,326 @@ void poisson_data<P>::solve(std::vector<P> const &density, P dleft, P dright,
   efield.back() = - (dright - rhs.back()) / dx;
 }
 
+template<typename P>
+direct<P>::direct(sparse_grid const &grid, connection_patterns const &conn,
+                  term_manager<P> const &terms, P alpha)
+{
+  tools::time_event timing_("forming dense matrix");
+  int const num_dims    = grid.num_dims();
+  int const num_indexes = grid.num_indexes();
+  int const pdof        = terms.legendre.pdof;
+
+  int const n = fm::ipow(pdof, num_dims);
+
+  block_matrix<P> bmat(n * n, num_indexes, num_indexes);
+  block_matrix<P> wmat(n * n, num_indexes, num_indexes);
+
+  std::array<block_matrix<P>, max_num_dimensions> ids; // identity coefficients
+  for (int d : iindexof(num_dims)) {
+    int const size = fm::ipow2(grid.current_level(d));
+    ids[d] = block_matrix<P>(pdof * pdof, size, size);
+    for (int i = 0; i < size; i++) {
+      for (int j = 0; j < pdof; j++)
+        ids[d](i, i)[j * pdof + j] = 1;
+    }
+  }
+
+  // work coefficients, full-block matrices that will be used for this term_md
+  std::array<block_matrix<P> const *, max_num_dimensions> wcoeffs;
+
+  std::array<block_matrix<P>, max_num_dimensions> temp_mats;
+
+  auto kron_mats = [&](block_matrix<P> &mat)
+      -> void
+    {
+      if (num_dims == 1) {
+#pragma omp parallel for
+        for (int c = 0; c < num_indexes; c++) {
+          for (int r = 0; r < num_indexes; r++) {
+            int const ic = grid[c][0];
+            int const ir = grid[r][0];
+
+            std::copy_n((*wcoeffs[0])(ir, ic), pdof * pdof, mat(r, c));
+          }
+        }
+      } else {
+#pragma omp parallel for
+        for (int c = 0; c < num_indexes; c++) {
+          for (int r = 0; r < num_indexes; r++) {
+            int const *ic = grid[c];
+            int const *ir = grid[r];
+
+            int cyc    = 1;
+            int stride = fm::ipow(pdof, num_dims - 1);
+            int repeat = stride;
+            for (int d : iindexof(num_dims)) {
+              smmat::kron_block(pdof, cyc, stride, repeat,
+                                (*wcoeffs[d])(ir[d], ic[d]), mat(r, c));
+              stride /= pdof;
+              cyc    *= pdof;
+            }
+          }
+        }
+      }
+    };
+
+  auto set_wcoeff = [&](term_entry<P> const &te)
+      -> void
+    {
+      for (int d : iindexof(num_dims)) {
+        if (te.coeffs[d].nblock() > 0) {
+          temp_mats[d] = te.coeffs[d].to_full(conn);
+          wcoeffs[d]   = &temp_mats[d];
+        } else {
+          wcoeffs[d] = &ids[d];
+        }
+      }
+    };
+
+  auto it = terms.terms.begin();
+  while (it < terms.terms.end())
+  {
+    if (it->num_chain == 1) {
+      set_wcoeff(*it);
+      wmat.fill(1);
+      kron_mats(wmat);
+
+      int64_t const size = n * n * num_indexes * num_indexes;
+      P *mat_data        = bmat.data();
+      P const *wmat_data = wmat.data();
+
+      ASGARD_OMP_PARFOR_SIMD
+      for (int64_t i = 0; i < size; i++)
+        mat_data[i] += wmat_data[i];
+
+      ++it;
+    } else {
+      if (it->num_chain == 2) {
+        // need two temp matrices
+        block_matrix<P> t1(n * n, num_indexes, num_indexes);
+        set_wcoeff(*it);
+        t1.fill(1);
+        kron_mats(t1);
+
+        block_matrix<P> t2(n * n, num_indexes, num_indexes);
+        set_wcoeff(*(it + 1));
+        t2.fill(1);
+        kron_mats(t2);
+
+        gemm1(n, t1, t2, bmat);
+      } else {
+        throw std::runtime_error(
+            "term_md chains with num_chain >= 3 are not yet implemented "
+            "for the direct solver");
+      }
+
+      it += it->num_chain;
+    }
+  }
+
+  dense_mat = bmat.to_dense_matrix(n);
+
+  int64_t const size = n * num_indexes;
+
+#pragma omp parallel for
+  for (int64_t c = 0; c < size - 1; c++) {
+    P *dd = dense_mat.data() + c * (size + 1);
+    dd[0] = P{1} + alpha * dd[0];
+    dd += 1;
+    ASGARD_OMP_SIMD
+    for (int64_t i = 0; i < size; i++) {
+      dd[i] *= alpha;
+    }
+  }
+
+  dense_mat(size - 1, size - 1) = P{1} + alpha * dense_mat(size - 1, size - 1);
+
+  dense_mat.factorize();
+}
+
+template<typename P>
+int bicgstab<P>::solve(
+    operatoin_apply_lhs<P> apply_lhs, std::vector<P> const &rhs, std::vector<P> &x) const
+{
+  tools::time_event timing_("bicgstab::solve");
+  int64_t const n = static_cast<int64_t>(rhs.size());
+  if (v.size() != rhs.size()) // the other temps are initialized with a copy
+    v.resize(n);
+  if (t.size() != rhs.size()) // the other temps are initialized with a copy
+    t.resize(n);
+
+  auto dot = [&](std::vector<P> const &a, std::vector<P> const &b)
+    -> P {
+      P sum = 0;
+ASGARD_OMP_PARFOR_SIMD_EXTRA(reduction(+:sum))
+      for (int64_t i = 0; i < n; i++)
+        sum += a[i] * b[i];
+      return sum;
+    };
+  auto dot1 = [&](std::vector<P> const &a)
+    -> P {
+      P sum = 0;
+ASGARD_OMP_PARFOR_SIMD_EXTRA(reduction(+:sum))
+      for (int64_t i = 0; i < n; i++)
+        sum += a[i] * a[i];
+      return sum;
+    };
+  auto nrm = [&](std::vector<P> const &a)
+    -> P {
+      return std::sqrt(dot1(a));
+    };
+  auto axpy = [&](P alpha, std::vector<P> const &a, std::vector<P> &b)
+    -> void {
+ASGARD_OMP_PARFOR_SIMD
+      for (int64_t i = 0; i < n; i++)
+        b[i] += alpha * a[i];
+    };
+
+  r = rhs;
+
+  int num_appy = 1;
+  apply_lhs(-1, x.data(), 1, r.data()); // r0 = b - A * x0
+
+  P rho = dot1(r);
+
+  rref = r; // initialize rref (hat-r-0) and p
+  p    = r;
+
+  for (int i = 0; i < max_iter_; i++) {
+    ++num_appy;
+    apply_lhs(1, p.data(), 0, v.data()); // v = A * p
+
+    P const alpha = rho / dot(rref, v);
+
+    axpy(alpha, p, x);
+    axpy(-alpha, v, r);
+
+    if (nrm(r) < tolerance_) {
+      return num_appy;
+    }
+
+    ++num_appy;
+    apply_lhs(1, r.data(), 0, t.data()); // t = A * p
+
+    P const omega = dot(r, t) / dot1(t);
+
+    axpy(omega, r, x);
+    axpy(-omega, t, r);
+
+    if (nrm(r) < tolerance_) {
+      return num_appy;
+    }
+
+    P const rho1 = dot(rref, r);
+    P const beta = (rho1 / rho) * (alpha / omega);
+
+ASGARD_OMP_PARFOR_SIMD
+    for (int64_t k = 0; k < n; k++)
+      p[k] = r[k] + beta * (p[k] - omega * v[k]);
+
+    rho = rho1;
+  }
+  std::cerr << "Warning: ASGarD BiCGSTAB solver failed to converge within "
+            << max_iter_ << " iterations.\n";
+  return num_appy;
+}
+
+template<typename P>
+int gmres<P>::solve(
+    operatoin_apply_precon<P> apply_precon,
+    operatoin_apply_lhs<P> apply_lhs, std::vector<P> const &rhs,
+    std::vector<P> &x) const
+{
+  tools::time_event timing_("gmres::solve");
+  int const n = static_cast<int>(rhs.size());
+  expect(n == static_cast<int>(x.size()));
+
+  basis.resize(static_cast<int64_t>(n) * (max_inner_ + 1));
+
+  int num_appy = 0;
+
+  // int total_iterations = 0;
+  int outer_iterations = 0;
+  int inner_iterations = 0;
+
+  P inner_res = 0.;
+  P outer_res = tolerance_ + 1.;
+  while ((outer_res > tolerance_) && (outer_iterations < max_outer_))
+  {
+    std::copy(rhs.begin(), rhs.end(), basis.begin());
+    apply_lhs(-1, x.data(), 1, basis.data());
+    apply_precon(basis.data());
+    ++num_appy;
+
+    inner_res = lib_dispatch::nrm2(n, basis.data(), 1);
+    lib_dispatch::scal(n, P{1} / inner_res, basis.data(), 1);
+    krylov_sol[0] = inner_res;
+
+    inner_iterations = 0;
+    while (inner_res > tolerance_ and inner_iterations < max_inner_)
+    {
+      P *r = basis.data() + static_cast<int64_t>(n) * (inner_iterations + 1);
+      apply_lhs(1, basis.data() + static_cast<int64_t>(n) * inner_iterations, 0, r);
+      apply_precon(r);
+      ++num_appy;
+
+      // krylov projection coefficients for this iteration
+      P *coeff = krylov_proj + (inner_iterations * (inner_iterations + 1)) / 2;
+
+      lib_dispatch::gemv('T', n, inner_iterations + 1, P{1}, basis.data(), n,
+                         r, 1, P{0}, coeff, 1);
+      lib_dispatch::gemv('N', n, inner_iterations + 1, P{-1}, basis.data(), n,
+                         coeff, 1, P{1}, r, 1);
+
+      P const nrm = lib_dispatch::nrm2(n, r, 1);
+      lib_dispatch::scal(n, P{1} / nrm, r, 1);
+      for (int k = 0; k < inner_iterations; k++)
+        lib_dispatch::rot(1, coeff + k, 1, coeff + k + 1, 1,
+                          cosines[k], sines[k]);
+
+      // compute given's rotation
+      P beta = nrm;
+      lib_dispatch::rotg(coeff + inner_iterations, &beta,
+                         cosines + inner_iterations,
+                         sines + inner_iterations);
+
+      inner_res =
+          std::abs(sines[inner_iterations] * krylov_sol[inner_iterations]);
+
+      if (inner_res > tolerance_ and inner_iterations < max_inner_)
+      {
+        krylov_sol[inner_iterations + 1] = 0.;
+        lib_dispatch::rot(1, krylov_sol + inner_iterations, 1,
+                          krylov_sol + inner_iterations + 1, 1,
+                          cosines[inner_iterations], sines[inner_iterations]);
+      }
+
+      ++inner_iterations;
+    } // end of inner iteration loop
+
+    if (inner_iterations > 0)
+    {
+      lib_dispatch::tpsv('U', 'N', 'N', inner_iterations, krylov_proj, krylov_sol, 1);
+      lib_dispatch::gemv('N', n, inner_iterations, P{1}, basis.data(), n,
+                         krylov_sol, 1, P{1}, x.data(), 1);
+    }
+    ++outer_iterations;
+    outer_res = inner_res;
+  } // end outer iteration
+
+  return num_appy;
+}
+
 #ifdef ASGARD_ENABLE_DOUBLE
+template class direct<double>;
+template class bicgstab<double>;
 
 template gmres_info<double>
 simple_gmres(fk::matrix<double> const &A, fk::vector<double> &x,
              fk::vector<double> const &b, fk::matrix<double> const &M,
              int const restart, int const max_iter, double const tolerance);
 template gmres_info<double>
-bicgstab(fk::matrix<double> const &A, fk::vector<double> &x,
+simple_bicgstab(fk::matrix<double> const &A, fk::vector<double> &x,
          fk::vector<double> const &b, fk::matrix<double> const &M,
          int const max_iter, double const tolerance);
 
@@ -553,13 +867,16 @@ template void poisson_data<double>::solve(
 #endif // ASGARD_ENABLE_DOUBLE
 
 #ifdef ASGARD_ENABLE_FLOAT
+template class direct<float>;
+template class bicgstab<float>;
+
 template gmres_info<float>
 simple_gmres(fk::matrix<float> const &A, fk::vector<float> &x,
              fk::vector<float> const &b, fk::matrix<float> const &M,
              int const restart, int const max_iter, float const tolerance);
 
 template gmres_info<float>
-bicgstab(fk::matrix<float> const &A, fk::vector<float> &x,
+simple_bicgstab(fk::matrix<float> const &A, fk::vector<float> &x,
          fk::vector<float> const &b, fk::matrix<float> const &M,
          int const max_iter, float const tolerance);
 
@@ -600,4 +917,85 @@ template void poisson_data<float>::solve(
 
 #endif // ASGARD_ENABLE_FLOAT
 
-} // namespace asgard::solver
+} // namespace asgard::solvers
+
+namespace asgard
+{
+
+template<typename P>
+void solver_manager<P>::update_grid(
+    sparse_grid const &grid, connection_patterns const &conn,
+    term_manager<P> const &terms, P alpha)
+{
+  tools::time_event timing_("updating solver");
+  if (opt == solve_opts::direct)
+    var = solvers::direct<P>(grid, conn, terms, alpha);
+
+  if (precon == preconditioner_opts::jacobi) {
+    terms.make_jacobi(grid, conn, jacobi);
+ASGARD_OMP_PARFOR_SIMD
+    for (size_t i = 0; i < jacobi.size(); i++)
+      jacobi[i] = P{1} / (P{1} + alpha * jacobi[i]);
+  }
+
+  grid_gen = grid.generation();
+}
+
+template<typename P>
+void solver_manager<P>::xpby(std::vector<P> const &x, P beta, P y[]) {
+ASGARD_OMP_PARFOR_SIMD
+  for (size_t i = 0; i < x.size(); i++)
+    y[i] = x[i] + beta * y[i];
+}
+
+template<typename P>
+void solver_manager<P>::print_opts(std::ostream &os) const
+{
+  os << "solver:\n";
+  bool has_precon = false;
+  switch (var.index()) {
+    case 0:
+      os << "  direct\n";
+      break;
+    case 1:
+      os << "  gmres\n";
+      os << "  tolerance: " << std::get<solvers::gmres<P>>(var).tolerance() << '\n';
+      os << "  max inner: " << std::get<solvers::gmres<P>>(var).max_inner() << '\n';
+      os << "  max outer: " << std::get<solvers::gmres<P>>(var).max_outer() << '\n';
+      has_precon = true;
+      break;
+    case 2:
+      os << "  bicgstab\n";
+      os << "  tolerance:      " << std::get<solvers::bicgstab<P>>(var).tolerance() << '\n';
+      os << "  max iterations: " << std::get<solvers::bicgstab<P>>(var).max_iter() << '\n';
+      has_precon = true;
+      break;
+    default:
+      break;
+  }
+  if (has_precon) {
+    switch (precon) {
+      case preconditioner_opts::none:
+        os << "  no preconditioner\n";
+        break;
+      case preconditioner_opts::jacobi:
+        os << "  jacobi diagonal preconditioner\n";
+        break;
+      case preconditioner_opts::adi:
+        os << "  adi preconditioner\n";
+        break;
+      default: // unreachable
+        break;
+    }
+  }
+}
+
+#ifdef ASGARD_ENABLE_DOUBLE
+template struct solver_manager<double>;
+#endif
+
+#ifdef ASGARD_ENABLE_FLOAT
+template struct solver_manager<float>;
+#endif
+
+}

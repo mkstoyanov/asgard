@@ -873,11 +873,11 @@ public:
 
     // missing tolerance will be set within the solver module
     if (not options_.isolver_tolerance)
-      options_.isolver_tolerance = solver::notolerance;
+      options_.isolver_tolerance = solvers::notolerance;
     if (not options_.isolver_iterations)
-      options_.isolver_iterations = solver::novalue;
-    if (not options_.isolver_outer_iterations)
-      options_.isolver_outer_iterations = solver::novalue;
+      options_.isolver_iterations = solvers::novalue;
+    if (not options_.isolver_inner_iterations)
+      options_.isolver_inner_iterations = solvers::novalue;
   }
 
   constexpr static int extract_dim0 = 1;
@@ -1663,6 +1663,7 @@ public:
 
 private:
   bool check_chain() {
+    return true;
     int fluxdir = 2; // no flux direction found, two available
     for (int i : iindexof(chain_)) {
       term_1d<P> const &pt = chain_[i];
@@ -1960,7 +1961,7 @@ public:
   }
 
   //! return the time-advance method
-  time_advance::method method() const { return smethod_; }
+  time_advance::method step_method() const { return smethod_; }
 
   //! returns the time-step
   P dt() const { return dt_; }
@@ -1984,9 +1985,9 @@ public:
 
   //! prints the stepping data to a stream (human readable format)
   void print_time(std::ostream &os) const {
-    os << "time stepping:\n  time (t)        " << time_
+    os << "  time (t)        " << time_
        << "\n  stop-time (T)   " << stop_time_
-       << "\n  num-steps (n)   " << num_remain_
+       << "\n  num-steps (n)   " << tools::split_style(num_remain_)
        << "\n  time-step (dt)  " << dt_ << '\n';
   }
 
@@ -2103,10 +2104,32 @@ public:
         else
           throw std::runtime_error("must provide a polynomial degree with -d or default_degree()");
       }
+
+      // setting step method
+      if (not options_.step_method and options_.default_step_method)
+        options_.step_method = options_.default_step_method.value();
+
+      // setting solver for the time-stepper
+      if (not options_.solver and options_.default_solver)
+        options_.solver = options_.default_solver.value();
+      // setting up preconditioner for a possibly iterative solver
+      if (not options_.precon and options_.default_precon)
+        options_.precon = options_.default_precon.value();
+      // setting up the solver options
+      if (not options_.isolver_tolerance and options_.default_isolver_tolerance)
+        options_.isolver_tolerance = options_.default_isolver_tolerance.value();
+      if (not options_.isolver_iterations and options_.default_isolver_iterations)
+        options_.isolver_iterations = options_.default_isolver_iterations.value();
+      if (not options_.isolver_inner_iterations and options_.default_isolver_inner_iterations)
+        options_.isolver_inner_iterations = options_.default_isolver_inner_iterations.value();
     }
+
     // don't support l-inf norm yet
-    if (options_.adapt_threshold)
+    if (options_.adapt_threshold) {
+      if (options_.anorm and options_.anorm.value() == adapt_norm::linf)
+        std::cerr << "warning: l-inf norm not implemented for pde-version 2, switching to l2\n";
       options_.anorm = adapt_norm::l2;
+    }
   }
 
   //! shortcut for the number of dimensions

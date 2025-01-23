@@ -155,15 +155,15 @@ void discretization_manager<precision>::start_cold()
 
   degree_ = options.degree.value();
 
-  if (not stop_verbosity())
-    std::cout << "\n -- ASGarD discretization options --\n";
-
   if (high_verbosity()) {
     std::cout << "Branch: " << GIT_BRANCH << '\n';
     std::cout << "Commit Summary: " << GIT_COMMIT_HASH
                     << GIT_COMMIT_SUMMARY << '\n';
-    std::cout << "This executable was built on " << BUILD_TIME << '\n';
+    std::cout << "The library was built on " << BUILD_TIME << '\n';
   }
+
+  if (not stop_verbosity())
+    std::cout << "\n -- ASGarD discretization options --\n";
 
   sgrid = sparse_grid(options);
 
@@ -232,7 +232,8 @@ void discretization_manager<precision>::start_cold()
     }
 
     // if no method is set, defaulting to explicit time-stepping
-    time_advance::method sm = options.step_method.value_or(time_advance::method::exp);
+    time_advance::method sm = options.step_method.value_or(time_advance::method::rk3);
+    time_data<precision> dtime;
     if (n >= 0 and stop >= 0 and dt < 0)
       dtime = time_data<precision>(
           sm, n, typename time_data<precision>::input_stop_time{stop});
@@ -244,10 +245,17 @@ void discretization_manager<precision>::start_cold()
       dtime = time_data<precision>(sm, typename time_data<precision>::input_dt{dt}, n);
     else
       throw std::runtime_error("how did this happen?");
+
+    // the options are used to setup the solver
+    stepper = time_advance_manager<precision>(dtime, options);
   }
 
   if (not stop_verbosity())
-    std::cout << dtime;
+    std::cout << stepper;
+
+  if (stepper.needs_solver() and not options.solver)
+    throw std::runtime_error("the selected time-stepping method requires a solver, "
+                             "or a default solver set in the pde specification");
 
   hier = hierarchy_manipulator(degree_, pde2.domain());
 
@@ -264,10 +272,14 @@ void discretization_manager<precision>::start_cold()
     std::cout << "initial degrees of freedom: " << tools::split_style(dof) << "\n\n";
   }
 
-  // after setting the initial conditions, we do the moment/posson calculations
+  // after setting the initial conditions, we do the moment/poisson calculations
   // then we can rebuild the terms
 
-  terms.build_matrices(sgrid, conn, hier);
+  if (stepper.needed_precon() == preconditioner_opts::adi) {
+    terms.build_matrices(sgrid, conn, hier, preconditioner_opts::adi,
+                         0.5 * stepper.data.dt());
+  } else
+    terms.build_matrices(sgrid, conn, hier);
 
   if (high_verbosity())
     progress_report();
@@ -277,12 +289,9 @@ template<typename precision>
 void discretization_manager<precision>::restart_from_file()
 {
 #ifdef ASGARD_USE_HIGHFIVE
+  time_data<precision> dtime;
   h5writer<precision>::read(pde2.options().restart_file, high_verbosity(), pde2, sgrid,
                             dtime, state);
-#else
-  throw std::runtime_error("restarting from a file requires CMake option "
-                           "-DASGARD_USE_HIGHFIVE=ON");
-#endif
 
   auto const &options = pde2.options();
 
@@ -290,11 +299,17 @@ void discretization_manager<precision>::restart_from_file()
 
   hier = hierarchy_manipulator(degree_, pde2.domain());
 
+  stepper = time_advance_manager<precision>(dtime, options);
+
   terms = term_manager<precision>(pde2);
 
   terms.prapare_workspace(sgrid);
   // initialize the moments here, we already have the the state
-  terms.build_matrices(sgrid, conn, hier);
+  if (stepper.needed_precon() == preconditioner_opts::adi) {
+    terms.build_matrices(sgrid, conn, hier, preconditioner_opts::adi,
+                         0.5 * stepper.data.dt());
+  } else
+    terms.build_matrices(sgrid, conn, hier);
 
   if (not stop_verbosity()) {
     if (not options.title.empty())
@@ -302,15 +317,20 @@ void discretization_manager<precision>::restart_from_file()
     if (not options.subtitle.empty())
       std::cout << "subtitle: " << options.subtitle << '\n';
     std::cout << sgrid;
-    std::cout << dtime;
+    std::cout << stepper;
     if (high_verbosity())
       progress_report();
   }
+
+#else
+  throw std::runtime_error("restarting from a file requires CMake option "
+                           "-DASGARD_USE_HIGHFIVE=ON");
+#endif
 }
 template<typename precision>
 void discretization_manager<precision>::save_snapshot2(std::filesystem::path const &filename) const {
 #ifdef ASGARD_USE_HIGHFIVE
-  h5writer<precision>::write(pde2, degree_, sgrid, dtime, state, filename);
+  h5writer<precision>::write(pde2, degree_, sgrid, stepper.data, state, filename);
 #else
   ignore(filename);
   throw std::runtime_error("saving to a file requires CMake option -DASGARD_USE_HIGHFIVE=ON");
@@ -553,14 +573,14 @@ void discretization_manager<precision>::ode_sv(imex_flag imflag,
       kronops.make(imflag, *pde, matrices, grid);
       precision const tolerance = *options.isolver_tolerance;
       int const restart         = *options.isolver_iterations;
-      int const max_iter        = *options.isolver_outer_iterations;
+      int const max_iter        = *options.isolver_inner_iterations;
       sol.resize(static_cast<int>(x.size()));
       std::copy(x.begin(), x.end(), sol.begin());
       if (solver == solve_opts::gmres)
-        solver::simple_gmres_euler<precision, resource::host>(
+        solvers::simple_gmres_euler<precision, resource::host>(
             pde->get_dt(), imflag, kronops, sol, x, restart, max_iter, tolerance);
       else
-        solver::bicgstab_euler<precision, resource::host>(
+        solvers::bicgstab_euler<precision, resource::host>(
           pde->get_dt(), imflag, kronops, sol, x, max_iter, tolerance);
 
       std::copy(sol.begin(), sol.end(), x.begin());
@@ -596,6 +616,60 @@ discretization_manager<precision>::ode_rhs_v2(
 }
 
 template<typename precision> void
+discretization_manager<precision>::set_ode_rhs_sources(
+    precision time, precision alpha, std::vector<precision> &src) const
+{
+  tools::time_event performance_("set ode sources");
+
+  std::vector<separable_func<precision>> const &sep = pde2.source_sep();
+  if (sep.empty()) { // no sources, set to zero
+    if (src.empty())
+      src.resize(state.size());
+    else {
+      src.resize(state.size());
+      std::fill(src.begin(), src.end(), precision{0});
+    }
+    return;
+  }
+
+  if (alpha == 1) {
+    hier.template project_separable<data_mode::replace>
+        (sep.front(), pde2.domain(), sgrid, matrices.dim_dv, matrices.dim_mass, time, src);
+    for (auto is = sep.begin() + 1; is < sep.end(); is++) {
+      hier.template project_separable<data_mode::increment>
+            (*is, pde2.domain(), sgrid, matrices.dim_dv, matrices.dim_mass, time, src);
+    }
+  } else {
+    hier.template project_separable<data_mode::scal_rep>
+        (sep.front(), pde2.domain(), sgrid, matrices.dim_dv, matrices.dim_mass, time, src, alpha);
+    for (auto is = sep.begin() + 1; is < sep.end(); is++) {
+      hier.template project_separable<data_mode::scal_inc>
+            (*is, pde2.domain(), sgrid, matrices.dim_dv, matrices.dim_mass, time, src, alpha);
+    }
+  }
+}
+
+template<typename precision> void
+discretization_manager<precision>::add_ode_rhs_sources(
+    precision time, precision alpha, std::vector<precision> &src) const
+{
+  tools::time_event performance_("add ode sources");
+
+  std::vector<separable_func<precision>> const &sep = pde2.source_sep();
+
+  if (alpha == 1)
+    for (int i : iindexof(sep)) {
+      hier.template project_separable<data_mode::increment>
+            (sep[i], pde2.domain(), sgrid, matrices.dim_dv, matrices.dim_mass, time, src);
+    }
+  else
+    for (int i : iindexof(sep)) {
+      hier.template project_separable<data_mode::scal_inc>
+            (sep[i], pde2.domain(), sgrid, matrices.dim_dv, matrices.dim_mass, time, src, alpha);
+    }
+}
+
+template<typename precision> void
 discretization_manager<precision>::project_function(
     std::vector<separable_func<precision>> const &sep,
     md_func<precision> const &, std::vector<precision> &out) const
@@ -609,7 +683,7 @@ discretization_manager<precision>::project_function(
     std::fill(out.begin(), out.end(), 0);
   }
 
-  precision time = dtime.time();
+  precision time = stepper.data.time();
 
   for (int i : iindexof(sep)) {
     hier.template project_separable<data_mode::increment>

@@ -262,6 +262,71 @@ void posvm(int const n, P const A[], P B[])
   for (int i = 0; i < n; i++)
     posv(n, A, B + i * n);
 }
+//! LU factorize, no pivot (diagonally dominant or close enough), L is unit diagonal
+template<typename P>
+void getrf(int const n, P A[]) {
+  ASGARD_OMP_SIMD
+  for (int r = 1; r < n; r++)
+    A[r] /= A[0];
+
+  for (int i = 1; i < n; i++) {
+    P s = A[i * n + i];
+    ASGARD_OMP_SIMD
+    for (int k = 0; k < i; k++)
+      s -= A[k * n + i] * A[i * n + k];
+
+    A[i * n + i] = s;
+
+    for (int r = i + 1; r < n; r ++) {
+      s = A[i * n + r];
+      ASGARD_OMP_SIMD
+      for (int k = 0; k < i; k++)
+        s -= A[k * n + r] * A[i * n + k];
+      A[i * n + r] = s / A[i * n + i];
+    }
+  }
+}
+//! apply the L^{-1} block of getrf() on a block B
+template<typename P>
+void getrs_l(int const n, P const L[], P B[]) {
+  for (int i = 0; i < n; i++) {
+    ASGARD_PRAGMA_OMP_SIMD(collapse(2))
+    for (int k = 0; k < n; k++)
+      for (int r = i + 1; r < n; r++)
+        B[k * n + r] -= L[i * n + r] * B[k * n + i];
+  }
+}
+//! apply the U^{-1} block of getrf() on the right of block B, i.e., B * U^{-1}
+template<typename P>
+void getrs_u_right(int const n, P const U[], P B[]) {
+  for (int i = 0; i < n; i++) {
+    for (int k = 0; k < n; k++) {
+      B[i * n + k] /= U[i * n + i];
+      ASGARD_OMP_SIMD
+      for (int r = i + 1; r < n; r++)
+        B[r * n + k] -= U[r * n + i] * B[i * n + k];
+    }
+  }
+}
+//! apply the U^{-1} block of getrf() on a block B, i.e., B * U^{-1}
+template<typename P>
+void getrs_u(int const n, P const U[], P B[]) {
+  for (int i = n - 1; i >= 0; --i) {
+    for (int k = 0; k < n; k++) {
+      B[k * n + i] /= U[i * n + i];
+      ASGARD_OMP_SIMD
+      for (int r = 0; r < i; r++)
+        B[k * n + r] -= B[k * n + i] * U[i * n + r];
+    }
+  }
+}
+//! sets a block to identity
+template<typename P>
+void set_eye(int const n, P I[]) {
+  std::fill_n(I, n * n, P{0});
+  for (int k = 0; k < n; k++)
+    I[k * (n + 1)] = P{1};
+}
 
 //! C += (dir) A^T B, dir must be +/-1, C is nrc by nrc
 template<int dir = +1, typename P>
@@ -308,7 +373,7 @@ void neg_transp_swap(int const &n, P A[], P B[])
 
 //! C += (dir) A B, dir must be +1/0/-1
 template<int dir = 0, typename P>
-void gemm(int const &n, P const A[], P const B[], P C[])
+void gemm(int const n, P const A[], P const B[], P C[])
 {
   static_assert(dir == 1 or dir == 0 or dir == -1);
   if constexpr (dir == 0)
@@ -439,6 +504,25 @@ void gemm_outer_inc(int n, P const x[], P const y[], P A[]) {
   }
 }
 
+//! A is n x n, B is n^d by n^d, cycle is n^dim_id, stride is n^(d - dim_id - 1), repeat is n^(d - 1)
+template<typename P>
+void kron_block(int n, int cycle, int stride, int repeat, P const A[], P B[])
+{
+  for (int m = 0; m < cycle; m++)
+    for (int c = 0; c < n; c++) // for each column
+    {
+      for (int i = 0; i < repeat; i++)
+      {
+        ASGARD_PRAGMA_OMP_SIMD(collapse(2))
+        for (int r = 0; r < n; r++) // for each row
+          for (int s = 0; s < stride; s++)
+            B[r * stride + s] *= A[c * n + r];
+
+        B += n * stride;
+      }
+    }
+}
+
 } // namespace asgard::smmat
 
 // put some fast-math overloads here that work with std::vector
@@ -464,6 +548,17 @@ void axpy(P const alpha, std::vector<P> const &x, std::vector<P> &y)
   expect(x.size() == y.size());
   int64_t n = static_cast<int64_t>(x.size());
   ASGARD_OMP_SIMD
+  for (int64_t i = 0; i < n; i++)
+    y[i] += alpha * x[i];
+}
+
+// y += alpha * x, parallel implementation
+template<typename P>
+void par_axpy(P const alpha, std::vector<P> const &x, std::vector<P> &y)
+{
+  expect(x.size() == y.size());
+  int64_t n = static_cast<int64_t>(x.size());
+  ASGARD_OMP_PARFOR_SIMD
   for (int64_t i = 0; i < n; i++)
     y[i] += alpha * x[i];
 }

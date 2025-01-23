@@ -1,68 +1,22 @@
 #pragma once
-#include "asgard_reconstruct.hpp"
-#include "asgard_boundary_conditions.hpp"
-#include "asgard_coefficients.hpp"
-#include "asgard_moment.hpp"
-#include "asgard_solver.hpp"
-#include "asgard_term_manager.hpp"
+#include "asgard_time_advance.hpp"
 
 #ifdef ASGARD_USE_HIGHFIVE
 #include "asgard_io.hpp"
 #endif
 
 /*!
+ * \internal
  * \file asgard_discretization.hpp
  * \brief Defines the container class discretization_manager
  * \author The ASGarD Team
  * \ingroup asgard_discretization
+ *
+ * \endinternal
  */
 
 namespace asgard
 {
-
-// forward declare so we can declare the fiend time-advance
-template<typename precision>
-class discretization_manager;
-
-/*!
- * \ingroup asgard_discretization
- * \brief Integrates in time until the final time or number of steps
- *
- * This method manipulates the problems internal state, applying adaptivity,
- * checkpointing and other related operations.
- * The method is decalred as a friend to simplify the implementation is external
- * to simplify the discretization_manager class, which will primarily focus on
- * data storage.
- *
- * The optional variable num_steps indicates the number of time steps to take:
- * - if zero, the method will return immediately,
- * - if negative, integration will continue until the final time step
- */
-template<typename P> // implemented in time-advance
-void advance_time(discretization_manager<P> &manager, int64_t num_steps = -1);
-
-#ifndef __ASGARD_DOXYGEN_SKIP
-// placeholder for the new api
-template<typename P> // implemented in time-advance
-void advance_time_v2(discretization_manager<P> &manager, int64_t num_steps = -1);
-#endif
-
-/*!
- * \internal
- * \brief holds matrix and pivot factors
- *
- * used to hold the matrix/factor combo for the direct implicit solvers that
- * explicitly form the large Kronecker matrix
- * \endinternal
- */
-template<typename P>
-struct matrix_factor
-{
-  //! matrix or matrix factors, factorized if ipiv is not empty
-  fk::matrix<P> A;
-  //! pivots for the factorization
-  std::vector<int> ipiv;
-};
 
 /*!
  * \ingroup asgard_discretization
@@ -111,7 +65,7 @@ public:
   int num_dims() const { return pde2.num_dims(); }
 
   //! returns the time discretization parameters
-  time_data<precision> const &time_params() const { return dtime; }
+  time_data<precision> const &time_params() const { return stepper.data; }
 
   //! get the current time-step number
   int64_t time_step() const { return time_step_; }
@@ -122,9 +76,9 @@ public:
   precision time() const { return time_; }
   //! set the time in the befinning of the simulation, time() must be zero to call this
   void set_time(precision t) {
-    if (dtime.step() != 0)
+    if (stepper.data.step() != 0)
       throw std::runtime_error("cannot reset the current time after the simulation start");
-    dtime.time() = t;
+    stepper.data.time() = t;
   }
   //! get the currently set final time step
   int64_t final_time_step() const { return final_time_step_; }
@@ -199,6 +153,33 @@ public:
   //! computes the right-hand-side of the ode
   void ode_rhs_v2(precision time, std::vector<precision> const &current,
                   std::vector<precision> &R) const;
+  //! computes the ode right-hand-side sources by projecting them onto the basis and setting them in src
+  void set_ode_rhs_sources(precision time, precision alpha,
+                           std::vector<precision> &src) const;
+  //! computes the ode right-hand-side sources by projecting them onto the basis and adding them to src
+  void add_ode_rhs_sources(precision time, precision alpha,
+                           std::vector<precision> &src) const;
+
+  //! applies all terms
+  void terms_apply_all(precision alpha, std::vector<precision> const &x, precision beta,
+                       std::vector<precision> &y) const
+  {
+    tools::time_event performance_("terms_apply_all kronmult");
+    terms.apply_all(sgrid, conn, alpha, x, beta, y);
+  }
+  //! applies all terms, non-owning array signature
+  void terms_apply_all(precision alpha, precision const x[], precision beta,
+                       precision y[]) const
+  {
+    tools::time_event performance_("terms_apply_all kronmult");
+    terms.apply_all(sgrid, conn, alpha, x, beta, y);
+  }
+  //! applies ADI preconditioner for all terms
+  void terms_apply_adi(precision const x[], precision y[]) const
+  {
+    tools::time_event performance_("terms_apply_adi kronmult");
+    terms.apply_all_adi(sgrid, conn, x, y);
+  }
 
   //! compute the electric field for the given state and update the coefficient matrices
   void do_poisson_update(std::vector<precision> const &field) const;
@@ -276,12 +257,22 @@ public:
 
   //! report time progress
   void progress_report(std::ostream &os = std::cout) {
-    os << "time-step: " << std::setw(10) << tools::split_style(dtime.step()) << "  time: ";
-    std::string s = std::to_string(dtime.time());
+    os << "time-step: " << std::setw(10) << tools::split_style(stepper.data.step()) << "  time: ";
+    std::string s = std::to_string(stepper.data.time());
 
-    os << std::setw(10) << s << std::string(11 - s.size(), ' ')
-       << "  grid size: " << std::setw(12) << tools::split_style(sgrid.num_indexes())
-       << "  dof: " << std::setw(14) << tools::split_style(state.size()) << "\n";
+    if (s.size() < 7)
+      os << std::setw(10) << s << std::string(7 - s.size(), ' ');
+    else
+      os << std::setw(10) << s;
+    os << "  grid size: " << std::setw(12) << tools::split_style(sgrid.num_indexes())
+       << "  dof: " << std::setw(14) << tools::split_style(state.size());
+    int64_t const num_appy = stepper.solver_iterations();
+    if (num_appy > 0) { // using iterative solver
+      os << "  av-iter: " << std::setw(14) << tools::split_style(num_appy / stepper.data.step())
+         << '\n';
+    } else {
+      os << '\n';
+    }
   }
   //! projects and sum-of-separable functions and md_func onto the current basis
   void project_function(std::vector<separable_func<precision>> const &sep,
@@ -303,10 +294,12 @@ public:
 #ifndef __ASGARD_DOXYGEN_SKIP_INTERNAL
 
   PDEv2<precision> const &get_pde2() const { return pde2; }
-  time_data<precision> const &time_props() const { return dtime; }
+  time_data<precision> const &time_props() const { return stepper.data; }
   bool version2() const { return not pde; }
   void save_snapshot2(std::filesystem::path const &filename) const;
   sparse_grid const &get_sgrid() const { return sgrid; }
+
+  term_manager<precision> const & get_terms() const { return terms; }
 
   //! return the hierarchy_manipulator
   auto const &get_hiermanip() const { return hier; }
@@ -363,6 +356,8 @@ public:
                                          int64_t num_steps);
 
   friend class h5writer<precision>;
+
+  friend struct time_advance_manager<precision>;
 #endif // __ASGARD_DOXYGEN_SKIP_INTERNAL
 
 protected:
@@ -424,9 +419,6 @@ private:
   int64_t time_step_;
   int64_t final_time_step_;
 
-  // time discretization (for version 2)
-  time_data<precision> dtime;
-
   // recompute only when the grid changes
   // left-right boundary conditions, time-independent components
   std::array<boundary_conditions::unscaled_bc_parts<precision>, 2> fixed_bc;
@@ -440,10 +432,12 @@ private:
   // moments, new implementation
   mutable std::optional<moments1d<precision>> moms1d;
   // poisson solver data
-  mutable std::optional<solver::poisson_data<precision>> poisson_solver;
+  mutable std::optional<solvers::poisson_data<precision>> poisson_solver;
 
   //! term manager holding coefficient matrices and kronmult meta-data
   mutable term_manager<precision> terms;
+  //! time advance manager for the different methods
+  time_advance_manager<precision> stepper;
 
   // constantly changing
   std::vector<precision> state;

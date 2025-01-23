@@ -55,14 +55,19 @@ term_manager<P>::term_manager(PDEv2<P> &pde)
   {
     if (pde_terms[i].is_chain()) {
       int const num_chain = pde_terms[i].num_chain();
-      auto ic = ir + num_chain - 1;
-      for (int j : iindexof(pde_terms[i].num_chain())) {
-        ic->tmd = std::move(pde_terms[i].chain_[num_chain - j - 1]);
-        ic->set_perms();
-        --ic;
-      }
+
+      // this indicates that t1 and/or t2 workspaces are needed
+      if (num_chain >= 2 and t1.empty())
+        t1.resize(1);
+      if (num_chain >= 3 and t2.empty())
+        t2.resize(1);
+
       ir->num_chain = num_chain;
-      ir += num_chain;
+      for (int c : iindexof(num_chain)) {
+        ir->tmd = std::move(pde_terms[i].chain_[c]);
+        ir->set_perms();
+        ++ir;
+      }
     } else {
       ir->tmd = std::move(pde_terms[i]);
       ir->set_perms();
@@ -79,7 +84,7 @@ term_manager<P>::term_manager(PDEv2<P> &pde)
 template<typename P>
 void term_manager<P>::rebuld_term(
     int const tid, sparse_grid const &grid, connection_patterns const &conn,
-    hierarchy_manipulator<P> const &hier)
+    hierarchy_manipulator<P> const &hier, preconditioner_opts precon, P alpha)
 {
   expect(legendre.pdof == hier.degree() + 1);
   expect(not terms[tid].tmd.is_chain());
@@ -104,19 +109,31 @@ void term_manager<P>::rebuld_term(
     if (t1d.change() == changes_with::level and terms[tid].level[d] == level)
       continue;
 
-    static block_tri_matrix<P> raw_tri;
-    static block_diag_matrix<P> raw_diag;
-
     bool is_diag = t1d.is_mass();
     if (t1d.is_chain()) {
-      rebuld_chain(d, t1d, level, is_diag, raw_diag, raw_tri);
+      rebuld_chain(d, t1d, level, is_diag, wraw_diag, wraw_tri);
     } else {
-      build_raw_mat(d, t1d, level, raw_diag, raw_tri);
+      build_raw_mat(d, t1d, level, wraw_diag, wraw_tri);
     }
+    // the build/rebuild put the result in raw_diag or raw_tri
     if (is_diag)
-      terms[tid].coeffs[d] = hier.diag2hierarchical(raw_diag, level, conn);
+      terms[tid].coeffs[d] = hier.diag2hierarchical(wraw_diag, level, conn);
     else
-      terms[tid].coeffs[d] = hier.tri2hierarchical(raw_tri, level, conn);
+      terms[tid].coeffs[d] = hier.tri2hierarchical(wraw_tri, level, conn);
+
+    // build the ADI preconditioner here
+    if (precon == preconditioner_opts::adi) {
+      if (is_diag) {
+        to_euler(legendre.pdof, alpha, wraw_diag);
+        psedoinvert(legendre.pdof, wraw_diag, raw_diag0);
+        terms[tid].adi[d] = hier.diag2hierarchical(raw_diag0, level, conn);
+      } else {
+        to_euler(legendre.pdof, alpha, wraw_tri);
+        psedoinvert(legendre.pdof, wraw_tri, raw_tri0);
+        terms[tid].adi[d] = hier.tri2hierarchical(raw_tri0, level, conn);
+      }
+    }
+
   } // move to next dimension d
 }
 
@@ -126,7 +143,7 @@ void term_manager<P>::build_raw_mat(
     block_tri_matrix<P> &raw_tri)
 {
   expect(not t1d.is_chain());
-  static block_diag_matrix<P> raw_mass;
+
   switch (t1d.optype())
   {
     case operation_type::mass:
@@ -188,11 +205,6 @@ void term_manager<P>::rebuld_chain(
   int const num_chain = t1d.num_chain();
   expect(num_chain > 1);
 
-  if (num_chain >= 2 and t1.empty())
-    t1.resize(1);
-  if (num_chain >= 3 and t2.empty())
-    t2.resize(1);
-
   is_diag = true;
   for (int i : iindexof(num_chain)) {
     if (not t1d[i].is_mass()) {
@@ -200,10 +212,6 @@ void term_manager<P>::rebuld_chain(
       break;
     }
   }
-
-  // workspace matrices
-  static block_tri_matrix<P> raw_tri0, raw_tri1;
-  static block_diag_matrix<P> raw_diag0, raw_diag1;
 
   if (is_diag) { // a bunch of diag matrices, easy case
     // raw_tri will not be referenced, it's just passed in
@@ -233,17 +241,14 @@ void term_manager<P>::rebuld_chain(
   block_tri_matrix<P> *tri1 = &raw_tri1;
 
   enum class fill {
-    diag, upper, lower, tri
+    diag, tri
   };
-  auto get_fill = [](term_1d<P> const &t)
-      -> fill {
-      if (t.is_mass()) return fill::diag;
-      if (t.is_penalty() or t.flux() == flux_type::central)
-        return fill::tri;
-      return (t.flux() == flux_type::upwind) ? fill::upper : fill::lower;
-    };
 
-  fill current = get_fill(t1d[num_chain - 1]);
+  // here we start with either a diagonal or tri-diagonal matrix
+  // and at each stage we multiply by diag/tri-matrix
+  // if we start with a diagonal, we will switch to tri at some point
+
+  fill current = (t1d.is_mass()) ? fill::diag : fill::tri;
   build_raw_mat(d, t1d[num_chain - 1], level, *diag0, *tri0);
 
   for (int i = num_chain - 2; i > 0; i--)
@@ -251,90 +256,47 @@ void term_manager<P>::rebuld_chain(
     build_raw_mat(d, t1d[i], level, raw_diag, raw_tri);
     // the result is in either raw_diag or raw_tri and must be multiplied and put
     // into either diag1 or tri1, then those should swap with diag0 and tri0
-    switch (get_fill(t1d[i])) // computed fill
-    {
-      case fill::diag: // computed a diagonal fill
-        if (current == fill::diag){ // diag-to-diag
-          diag1->check_resize(raw_diag);
-          gemm_block_diag(legendre.pdof, raw_diag, *diag0, *diag1);
-          std::swap(diag0, diag1);
-        } else { // the form of the tri-matrix does not matter
-          tri1->check_resize(raw_diag);
-          gemm_diag_tri(legendre.pdof, raw_diag, *tri0, *tri1);
-          std::swap(tri0, tri1);
-        }
-        break;
-      case fill::upper: // computed upper fill
-        if (current == fill::diag) {
-          tri1->check_resize(raw_tri);
-          gemm_tri_diag(legendre.pdof, raw_tri, *diag0, *tri1);
-          std::swap(tri0, tri1);
-          current = fill::upper;
-        } else {
-          // must be fill::lower, cannot be another upper or tri
-          tri1->check_resize(raw_tri);
-          gemm_block_tri_ul(legendre.pdof, raw_tri, *tri0, *tri1);
-          std::swap(tri0, tri1);
-          current = fill::tri;
-        }
-        break;
-      case fill::lower: // computed upper fill
-        if (current == fill::diag ) {
-          tri1->check_resize(raw_tri);
-          gemm_tri_diag(legendre.pdof, raw_tri, *diag0, *tri1);
-          std::swap(tri0, tri1);
-          current = fill::lower;
-        } else {
-          // must be fill::upper, cannot be another lower or tri
-          tri1->check_resize(raw_tri);
-          gemm_block_tri_lu(legendre.pdof, raw_tri, *tri0, *tri1);
-          std::swap(tri0, tri1);
-          current = fill::tri;
-        }
-        break;
-      default: // computed tri matrix, the current must be diagonal
+    if (t1d.is_mass()) { // computed a diagonal fill
+      if (current == fill::diag) { // diag-to-diag
+        diag1->check_resize(raw_diag);
+        gemm_block_diag(legendre.pdof, raw_diag, *diag0, *diag1);
+        std::swap(diag0, diag1);
+      } else { // multiplying diag by tri-diag
+        tri1->check_resize(raw_diag);
+        gemm_diag_tri(legendre.pdof, raw_diag, *tri0, *tri1);
+        std::swap(tri0, tri1);
+      }
+    } else { // computed tri matrix (upper or lower diagonal)
+      if (current == fill::diag ) { // tri times diag
         tri1->check_resize(raw_tri);
         gemm_tri_diag(legendre.pdof, raw_tri, *diag0, *tri1);
         std::swap(tri0, tri1);
         current = fill::tri;
-        break;
+      } else {
+        tri1->check_resize(raw_tri);
+        gemm_block_tri(legendre.pdof, raw_tri, *tri0, *tri1);
+        std::swap(tri0, tri1);
+        current = fill::tri;
+      }
     }
   }
 
   // last term, compute in diag1/tri1 and multiply into raw_tri
   build_raw_mat(d, t1d[0], level, *diag1, *tri1);
 
-  switch (get_fill(t1d[0])) // computed fill
-  {
-    case fill::diag: // computed a diagonal fill
-      // the rest must be a tri-diagonal matrix already
-      raw_tri.check_resize(*tri0);
-      gemm_diag_tri(legendre.pdof, *diag1, *tri0, raw_tri);
-      break;
-    case fill::upper: // computed upper fill
-      if (current == fill::diag) {
-        raw_tri.check_resize(*tri1);
-        gemm_tri_diag(legendre.pdof, *tri1, *diag0, raw_tri);
-      } else {
-        // must be fill::lower, cannot be another upper or tri
-        raw_tri.check_resize(*tri1);
-        gemm_block_tri_ul(legendre.pdof, *tri1, *tri0, raw_tri);
-      }
-      break;
-    case fill::lower: // computed upper fill
-      if (current == fill::diag ) {
-        raw_tri.check_resize(*tri1);
-        gemm_tri_diag(legendre.pdof, *tri1, *diag0, raw_tri);
-      } else {
-        // must be fill::upper, cannot be another lower or tri
-        raw_tri.check_resize(*tri1);
-        gemm_block_tri_lu(legendre.pdof, *tri1, *tri0, raw_tri);
-      }
-      break;
-    default: // computed tri matrix, the current must be diagonal
+  if (t1d[0].is_mass()) {
+    // the rest must be a tri-diagonal matrix already
+    // otherwise the whole chain would consist of only diagonal ones
+    raw_tri.check_resize(*tri0);
+    gemm_diag_tri(legendre.pdof, *diag1, *tri0, raw_tri);
+  } else {
+    if (current == fill::diag) {
       raw_tri.check_resize(*tri1);
       gemm_tri_diag(legendre.pdof, *tri1, *diag0, raw_tri);
-      break;
+    } else {
+      raw_tri.check_resize(*tri1);
+      gemm_block_tri(legendre.pdof, *tri1, *tri0, raw_tri);
+    }
   }
 }
 
@@ -372,15 +334,170 @@ void term_manager<P>::apply_all(
     b = 1; // next iteration appends on y
   }
 }
+template<typename P>
+void term_manager<P>::apply_all(
+    sparse_grid const &grid, connection_patterns const &conns,
+    P alpha, P const x[], P beta, P y[]) const
+{
+  P b = beta; // on first iteration, overwrite y
+
+  auto it = terms.begin();
+  while (it < terms.end())
+  {
+    if (it->num_chain == 1) {
+      kron_term(grid, conns, *it, alpha, x, b, y);
+      ++it;
+    } else {
+      // dealing with a chain
+      int const num_chain = it->num_chain;
+
+      kron_term(grid, conns, *(it + num_chain - 1), 1, x, 0, t1.data());
+      for (int i = num_chain - 2; i > 0; --i) {
+        kron_term(grid, conns, *(it + i), 1, t1, 0, t2);
+        std::swap(t1, t2);
+      }
+      kron_term(grid, conns, *it, alpha, t1.data(), b, y);
+
+      it += it->num_chain;
+    }
+
+    b = 1; // next iteration appends on y
+  }
+}
+
+template<typename P>
+void term_manager<P>::apply_all_adi(
+    sparse_grid const &grid, connection_patterns const &conns,
+    P const x[], P y[]) const
+{
+  int64_t const n = grid.num_indexes() * fm::ipow(legendre.pdof, grid.num_dims());
+
+  t1.resize(n);
+  t2.resize(n);
+  std::copy_n(x, n, t1.data());
+
+  auto it = terms.begin();
+  while (it < terms.end())
+  {
+    if (it->num_chain == 1) {
+      kron_term_adi(grid, conns, *it, 1, t1.data(), 0, t2.data());
+      std::swap(t1, t2);
+      ++it;
+    } else {
+      // TODO: consider whether we should do this or not
+      it += it->num_chain;
+    }
+  }
+  std::copy_n(t1.data(), n, y);
+}
+
+template<typename P>
+void term_manager<P>::make_jacobi(
+    sparse_grid const &grid, connection_patterns const &conns,
+    std::vector<P> &y) const
+{
+  int const block_size      = fm::ipow(legendre.pdof, grid.num_dims());
+  int64_t const num_entries = block_size * grid.num_indexes();
+
+  if (y.size() == 0)
+    y.resize(num_entries);
+  else {
+    y.resize(num_entries);
+    std::fill(y.begin(), y.end(), P{0});
+  }
+
+  kwork.w1.resize(num_entries);
+
+  auto it = terms.begin();
+  while (it < terms.end())
+  {
+    if (it->num_chain == 1) {
+      kron_diag<data_mode::increment>(grid, conns, *it, block_size, y);
+      ++it;
+    } else {
+      // dealing with a chain
+      int const num_chain = it->num_chain;
+
+      std::fill(kwork.w1.begin(), kwork.w1.end(), P{0});
+
+      kron_diag<data_mode::increment>(grid, conns, *(it + num_chain - 1),
+                                      block_size, kwork.w1);
+
+      for (int i = num_chain - 2; i >= 0; --i) {
+        kron_diag<data_mode::multiply>(grid, conns, *(it + i),
+                                       block_size, kwork.w1);
+      }
+ASGARD_OMP_PARFOR_SIMD
+      for (int64_t i = 0; i < num_entries; i++)
+        y[i] += kwork.w1[i];
+
+      it += it->num_chain;
+    }
+  }
+}
+
+template<typename P>
+template<data_mode mode>
+void term_manager<P>::kron_diag(
+    sparse_grid const &grid, connection_patterns const &conn,
+    term_entry<P> const &tme, int const block_size, std::vector<P> &y) const
+{
+  static_assert(mode == data_mode::increment or mode == data_mode::multiply);
+
+#pragma omp parallel
+  {
+    std::array<P const *, max_num_dimensions> amats;
+
+#pragma omp for
+    for (int i = 0; i < grid.num_indexes(); i++) {
+      for (int d : iindexof(num_dims))
+        if (tme.coeffs[d].empty())
+          amats[d] = nullptr;
+        else
+          amats[d] = tme.coeffs[d][conn[tme.coeffs[d]].row_diag(grid[i][d])];
+
+      for (int t : iindexof(block_size)) {
+        P a = 1;
+        int tt = i;
+        for (int d = num_dims - 1; d >= 0; --d)
+        {
+          if (amats[d] != nullptr) {
+            int const rc = tt % legendre.pdof;
+            a *= amats[d][rc * legendre.pdof + rc];
+          }
+          tt /= legendre.pdof;
+        }
+        if constexpr (mode == data_mode::increment)
+          y[i * block_size + t] += a;
+        else if constexpr (mode == data_mode::multiply)
+          y[i * block_size + t] *= a;
+      }
+    }
+  }
+}
 
 #ifdef ASGARD_ENABLE_DOUBLE
 template struct term_entry<double>;
 template struct term_manager<double>;
+
+template void term_manager<double>::kron_diag<data_mode::increment>(
+    sparse_grid const &, connection_patterns const &,
+    term_entry<double> const &, int const, std::vector<double> &) const;
+template void term_manager<double>::kron_diag<data_mode::multiply>(
+    sparse_grid const &, connection_patterns const &,
+    term_entry<double> const &, int const, std::vector<double> &) const;
 #endif
 
 #ifdef ASGARD_ENABLE_FLOAT
 template struct term_entry<float>;
 template struct term_manager<float>;
+
+template void term_manager<float>::kron_diag<data_mode::increment>(
+    sparse_grid const &, connection_patterns const &,
+    term_entry<float> const &, int const, std::vector<float> &) const;
+template void term_manager<float>::kron_diag<data_mode::multiply>(
+    sparse_grid const &, connection_patterns const &,
+    term_entry<float> const &, int const, std::vector<float> &) const;
 #endif
 
 }

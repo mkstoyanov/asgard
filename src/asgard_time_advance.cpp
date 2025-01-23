@@ -1,10 +1,12 @@
-#include "asgard_time_advance.hpp"
+#include "asgard_discretization.hpp"
+
+#include "asgard_small_mats.hpp"
 
 namespace asgard::time_advance
 {
 template<typename P>
 fk::vector<P>
-rungekutta3(discretization_manager<P> const &dist, std::vector<P> const &current)
+rungekutta3_m(discretization_manager<P> const &dist, std::vector<P> const &current)
 {
   P const dt = dist.dt();
 
@@ -35,46 +37,6 @@ rungekutta3(discretization_manager<P> const &dist, std::vector<P> const &current
     r[i] = current[i] + dt * (k1[i] + 4 * k2[i] + k3[i]) / P{6};
 
   return r;
-}
-
-template<typename P> void
-rungekutta3(discretization_manager<P> const &dist, std::vector<P> const &current,
-            std::vector<P> &next)
-{
-  tools::time_event performance_("runge kutta 3");
-
-  P const time = dist.time_params().time();
-  P const dt   = dist.time_params().dt();
-
-  // 3 right-hand-sides and the intermediate step
-  // the assumption is that the time-stepping scheme does not change much
-  // thus it makes sense to make these static and avoid repeated allocation
-  static std::vector<P> k1, k2, k3, s1;
-
-  k1.resize(current.size());
-  k2.resize(current.size());
-  k3.resize(current.size());
-  s1.resize(current.size());
-
-  dist.ode_rhs_v2(time, current, k1);
-
-  ASGARD_OMP_PARFOR_SIMD
-  for (size_t i = 0; i < current.size(); i++)
-    s1[i] = current[i] + 0.5 * dt * k1[i];
-
-  dist.ode_rhs_v2(time + 0.5 * dt, s1, k2);
-
-  ASGARD_OMP_PARFOR_SIMD
-  for (size_t i = 0; i < current.size(); i++)
-    s1[i] = current[i] - dt * k1[i] + 2 * dt * k2[i];
-
-  dist.ode_rhs_v2(time + dt, s1, k3);
-
-  next.resize(current.size());
-
-  ASGARD_OMP_PARFOR_SIMD
-  for (size_t i = 0; i < current.size(); i++)
-    next[i] = current[i] + dt * (k1[i] + 4 * k2[i] + k3[i]) / P{6};
 }
 
 // no-MPI solver yet
@@ -209,8 +171,8 @@ imex_advance(discretization_manager<P> &disc,
   // Implicit step f_1: f_1 - dt B f_1 = f_1s
   solve_opts solver  = options.solver.value();
   P const tolerance  = *options.isolver_tolerance;
-  int const restart  = *options.isolver_iterations;
-  int const max_iter = *options.isolver_outer_iterations;
+  int const restart  = *options.isolver_inner_iterations;
+  int const max_iter = *options.isolver_iterations;
   fk::vector<P, mem_type::owner, imex_resrc> f_1(f.size());
   fk::vector<P, mem_type::owner, imex_resrc> f_1_output(f.size());
   if (pde.do_collision_operator())
@@ -246,13 +208,13 @@ imex_advance(discretization_manager<P> &disc,
     }
     if (solver == solve_opts::gmres)
     {
-      pde.gmres_outputs[0] = solver::simple_gmres_euler(
+      pde.gmres_outputs[0] = solvers::simple_gmres_euler(
           pde.get_dt(), imex_flag::imex_implicit, operator_matrices,
           f_1, f, restart, max_iter, tolerance);
     }
     else if (solver == solve_opts::bicgstab)
     {
-      pde.gmres_outputs[0] = solver::bicgstab_euler(
+      pde.gmres_outputs[0] = solvers::bicgstab_euler(
           pde.get_dt(), imex_flag::imex_implicit, operator_matrices,
           f_1, f, max_iter, tolerance);
     }
@@ -345,13 +307,13 @@ imex_advance(discretization_manager<P> &disc,
 
     if (solver == solve_opts::gmres)
     {
-      pde.gmres_outputs[1] = solver::simple_gmres_euler(
+      pde.gmres_outputs[1] = solvers::simple_gmres_euler(
           P{0.5} * pde.get_dt(), imex_flag::imex_implicit, operator_matrices,
           f_2, f, restart, max_iter, tolerance);
     }
     else if (solver == solve_opts::bicgstab)
     {
-      pde.gmres_outputs[1] = solver::bicgstab_euler(
+      pde.gmres_outputs[1] = solvers::bicgstab_euler(
           P{0.5} * pde.get_dt(), imex_flag::imex_implicit, operator_matrices,
           f_2, f, max_iter, tolerance);
     }
@@ -423,13 +385,15 @@ void advance_time(discretization_manager<P> &manager, int64_t num_steps)
         switch (method)
         {
         case time_advance::method::exp:
-          return time_advance::rungekutta3(manager, manager.current_state());
+          return time_advance::rungekutta3_m(manager, manager.current_state());
         case time_advance::method::imp:
           return time_advance::implicit_advance<P>(manager, manager.current_state());
         case time_advance::method::imex:
           return time_advance::imex_advance<P>(manager, pde, kronops, grid,
                                                manager.current_state(), fk::vector<P>(),
                                                time);
+        default:
+          throw std::runtime_error("old time-advance called with new enum-tag");
         };
       }
 
@@ -462,14 +426,14 @@ void advance_time(discretization_manager<P> &manager, int64_t num_steps)
           switch (method)
           {
           case time_advance::method::exp:
-            return time_advance::rungekutta3(manager, y.to_std());
+            return time_advance::rungekutta3_m(manager, y.to_std());
           case time_advance::method::imp:
             return time_advance::implicit_advance<P>(manager, y.to_std());
           case time_advance::method::imex:
             return time_advance::imex_advance<P>(manager, pde, kronops, grid,
                                                  y, y_first_refine, time);
           default:
-            return fk::vector<P>();
+            throw std::runtime_error("old time-advance called with new enum-tag");
           };
         }();
 
@@ -546,6 +510,182 @@ void advance_time(discretization_manager<P> &manager, int64_t num_steps)
       break;
   }
 }
+}
+
+namespace asgard::time_advance
+{
+
+template<typename P>
+void rungekutta3<P>::next_step(
+    discretization_manager<P> const &disc, std::vector<P> const &current,
+    std::vector<P> &next) const
+{
+  tools::time_event performance_("runge kutta 3");
+
+  P const time = disc.time_params().time();
+  P const dt   = disc.time_params().dt();
+
+  k1.resize(current.size());
+  k2.resize(current.size());
+  k3.resize(current.size());
+  s1.resize(current.size());
+
+  disc.ode_rhs_v2(time, current, k1);
+
+  ASGARD_OMP_PARFOR_SIMD
+  for (size_t i = 0; i < current.size(); i++)
+    s1[i] = current[i] + 0.5 * dt * k1[i];
+
+  disc.ode_rhs_v2(time + 0.5 * dt, s1, k2);
+
+  ASGARD_OMP_PARFOR_SIMD
+  for (size_t i = 0; i < current.size(); i++)
+    s1[i] = current[i] - dt * k1[i] + 2 * dt * k2[i];
+
+  disc.ode_rhs_v2(time + dt, s1, k3);
+
+  next.resize(current.size());
+
+  ASGARD_OMP_PARFOR_SIMD
+  for (size_t i = 0; i < current.size(); i++)
+    next[i] = current[i] + dt * (k1[i] + 4 * k2[i] + k3[i]) / P{6};
+}
+
+template<typename P>
+void crank_nicolson<P>::next_step(
+    discretization_manager<P> const &disc, std::vector<P> const &current,
+    std::vector<P> &next) const
+{
+  tools::time_event performance_("crank-nicolson");
+
+  P const time = disc.time_params().time();
+  P const dt   = disc.time_params().dt();
+
+  // if the grid changed since the last time we used the solver
+  // update the matrices and preconditioners, update-grid checks what's needed
+  if (solver.grid_gen != disc.get_sgrid().generation())
+    solver.update_grid(disc.get_sgrid(), disc.get_conn(), disc.get_terms(), 0.5 * dt);
+
+  if (solver.opt == solve_opts::direct) {
+    next = current; // copy
+
+    disc.terms_apply_all(-0.5 * dt, current, 1, next);
+    disc.add_ode_rhs_sources(time + 0.5 * dt, dt, next);
+
+    solver.direct_solve(next);
+  } else { // iterative solver
+    // form the right-hand-side inside work
+    work = current;
+    disc.terms_apply_all(-0.5 * dt, current, 1, work);
+    disc.add_ode_rhs_sources(time + 0.5 * dt, dt, work);
+
+    next = current; // use the current step as the initial guess
+
+    int64_t const n = static_cast<int64_t>(work.size());
+
+    switch (solver.precon) {
+    case preconditioner_opts::none:
+      solver.iterate_solve(
+        [&](P alpha, P const x[], P beta, P y[]) -> void
+        {
+          ASGARD_OMP_PARFOR_SIMD
+          for (int64_t i = 0; i < n; i++)
+            y[i] = alpha * x[i] + beta * y[i];
+          disc.terms_apply_all(0.5 * alpha * dt, x, 1, y);
+        }, work, next);
+    break;
+    case preconditioner_opts::jacobi:
+      solver.iterate_solve(
+        [&](P y[]) -> void
+        {
+          tools::time_event timing_("jacobi preconditioner");
+          ASGARD_OMP_PARFOR_SIMD
+          for (int64_t i = 0; i < n; i++)
+            y[i] *= solver.jacobi[i];
+        },
+        [&](P alpha, P const x[], P beta, P y[]) -> void
+        {
+          ASGARD_OMP_PARFOR_SIMD
+          for (int64_t i = 0; i < n; i++)
+            y[i] = alpha * x[i] + beta * y[i];
+          disc.terms_apply_all(0.5 * alpha * dt, x, 1, y);
+        }, work, next);
+    break;
+    default: {
+      static std::vector<P> adi_work;
+      adi_work.resize(work.size());
+      // assuming ADI
+      solver.iterate_solve(
+        [&](P y[]) -> void
+        {
+          disc.terms_apply_adi(y, adi_work.data());
+          std::copy(adi_work.begin(), adi_work.end(), y);
+        },
+        [&](P alpha, P const x[], P beta, P y[]) -> void
+        {
+          ASGARD_OMP_PARFOR_SIMD
+          for (int64_t i = 0; i < n; i++)
+            y[i] = alpha * x[i] + beta * y[i];
+          disc.terms_apply_all(0.5 * alpha * dt, x, 1, y);
+        }, work, next);
+    }
+    break;
+    }
+  }
+}
+
+}
+
+namespace asgard
+{
+
+template<typename P>
+time_advance_manager<P>::time_advance_manager(time_data<P> const &tdata, prog_opts const &options)
+  : data(tdata)
+{
+  expect(static_cast<int>(data.step_method()) <= 1 ); // the new modes that have been implemented
+
+  // prepare the time-stepper
+  switch (data.step_method())
+  {
+    case time_advance::method::rk3:
+      method = time_advance::rungekutta3<P>();
+      break;
+    case time_advance::method::cn:
+      method = time_advance::crank_nicolson<P>(options);
+      break;
+    default:
+      throw std::runtime_error("unimplemented time-advance option");
+  }
+}
+
+template<typename P>
+void time_advance_manager<P>::next_step(discretization_manager<P> const &dist,
+                                        std::vector<P> const &current,
+                                        std::vector<P> &next) const
+{
+  switch (data.step_method())
+  {
+    case time_advance::method::rk3:
+      std::get<time_advance::rungekutta3<P>>(method).next_step(dist, current, next);
+      break;
+    case time_advance::method::cn:
+      std::get<time_advance::crank_nicolson<P>>(method).next_step(dist, current, next);
+      break;
+    default:
+      throw std::runtime_error("unimplemented time-advance option");
+  }
+}
+
+template<typename P>
+std::string time_advance_manager<P>::method_name() const {
+  std::map<time_advance::method, std::string> names = {
+    {time_advance::method::rk3, "Runge-Kutta 3-step (explicit)"},
+    {time_advance::method::cn, "Crank-Nicolson 1-step (implicit)"},
+  };
+
+  return names.find(data.step_method())->second;
+}
 
 template<typename P> // implemented in time-advance
 void advance_time_v2(discretization_manager<P> &manager, int64_t num_steps)
@@ -553,10 +693,12 @@ void advance_time_v2(discretization_manager<P> &manager, int64_t num_steps)
   // periodically reports time
   static tools::simple_timer::time_point wctime = tools::simple_timer::current_time();
 
+  time_advance_manager<P> const &stepper = manager.stepper;
+
+  time_data<P> &params = manager.stepper.data;
+
   // is num_steps is negative, run to the end of num_remain()
   // otherwise, run num_steps but no more than num_remain()
-  time_data<P> &params = manager.dtime;
-
   if (num_steps > 0)
     num_steps = std::min(params.num_remain(), num_steps);
   else
@@ -571,15 +713,7 @@ void advance_time_v2(discretization_manager<P> &manager, int64_t num_steps)
   std::vector<P> next;
   while (--num_steps >= 0)
   {
-    switch (params.method())
-    {
-      case time_advance::method::exp:
-        time_advance::rungekutta3(manager, manager.state, next);
-        break;
-      default:
-        throw std::runtime_error("not implemented for pde-v2 (coming soon)");
-        break;
-    }
+    stepper.next_step(manager, manager.state, next);
 
     if (tol > 0) {
       int const gen = grid.generation();
@@ -607,11 +741,19 @@ void advance_time_v2(discretization_manager<P> &manager, int64_t num_steps)
 }
 
 #ifdef ASGARD_ENABLE_DOUBLE
+template struct time_advance::rungekutta3<double>;
+template struct time_advance::crank_nicolson<double>;
+template struct time_advance_manager<double>;
+
 template void advance_time(discretization_manager<double> &, int64_t);
 template void advance_time_v2(discretization_manager<double> &, int64_t);
 #endif
 
 #ifdef ASGARD_ENABLE_FLOAT
+template struct time_advance::rungekutta3<float>;
+template struct time_advance::crank_nicolson<float>;
+template struct time_advance_manager<float>;
+
 template void advance_time(discretization_manager<float> &, int64_t);
 template void advance_time_v2(discretization_manager<float> &, int64_t);
 #endif
