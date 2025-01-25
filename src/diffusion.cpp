@@ -16,8 +16,8 @@
  * \ingroup asgard_examples
  * \addtogroup asgard_examples_diffusion Example 4, Diffusion operator
  *
- * \par Example 3
- * Solves the continuity partial differential equation in arbitrary dimension \b d
+ * \par Example 4
+ * Solves the 2D diffusion partial differential equation
  * \f[ \frac{d}{dt} f - \nabla \cdot \nabla f = s \f]
  * where the right-hand-side source \b s is chosen so the exact solution is
  * \f[ f(t, x, y) = (1 - \exp(-t)) (\exp(1 - x^2) - 1) \f]
@@ -40,6 +40,9 @@
  * time stepping method, and we want to use an implicit stepper.
  * While more stable and less restrictive on the time-step,
  * implicit methods come with the additional challenge of requiring a linear solver.
+ *
+ * \par
+ * The focus of this example is the use of implicit time-stepping and a linear solver.
  */
 
 /*!
@@ -93,7 +96,7 @@ asgard::PDEv2<P> make_diffusion_pde(int num_dims, asgard::prog_opts options) {
   // using implicit Crank-Nicolson method, which requires a solver
   options.default_step_method = asgard::time_advance::method::cn;
 
-  if (options.max_level() < 5) {
+  if (options.max_level() <= 5) {
     // direct (dense) solver is fast for small problems and works well for prototyping
     // and debugging, since it remove from the problem some additional factors,
     // such as solver tolerance and number of iterations
@@ -122,6 +125,7 @@ asgard::PDEv2<P> make_diffusion_pde(int num_dims, asgard::prog_opts options) {
   // the inner iterations explicitly form and manipulate the basis for the Krylov sub-space
   // which requires lots of memory and the number here should be kept moderate
   // (memory usage is dominated by isolver_inner_iterations * degrees-of-freedom)
+  // (the bicgstab method ignores this value)
   options.isolver_inner_iterations = 50;
 
   // create a pde from the given options and domain
@@ -132,15 +136,13 @@ asgard::PDEv2<P> make_diffusion_pde(int num_dims, asgard::prog_opts options) {
   // one dimensional divergence term using upwind flux
   // setting Dirichlet condition here will in fact yield Neumann boundary condition
   // for the combined operator and onto the field
-  asgard::term_1d<P> div = asgard::term_div(asgard::flux_type::upwind,
-                                            asgard::boundary_type::free,
-                                            P{-1});
+  asgard::term_1d<P> div = asgard::term_div<P>(-1, asgard::flux_type::upwind,
+                                               asgard::boundary_type::free);
 
   // Dirichlet conditions applied to the grad term apply Dirichlet condition
   // for the combined operator and respectively the field
-  asgard::term_1d<P> grad = asgard::term_grad(asgard::flux_type::upwind,
-                                              asgard::boundary_type::dirichlet,
-                                              P{1});
+  asgard::term_1d<P> grad = asgard::term_grad<P>(1, asgard::flux_type::upwind,
+                                                 asgard::boundary_type::dirichlet);
 
   // different way of operator chaining
   if constexpr (chain1d)
@@ -314,8 +316,6 @@ void self_test();
  *
  * The main() processes the command line arguments and calls both
  * make_diffusion_pde() and get_error_l2().
- * The interesting part is how to add custom command line parameters
- * to the default ones provided by ASGarD.
  *
  * \snippet diffusion.cpp diffusion_md main
  */
@@ -335,7 +335,7 @@ int main(int argc, char** argv)
   // if help was selected in the command line, show general information about
   // this example runs 2D problem, testing does more options
   if (options.show_help) {
-    std::cout << "\n solves the continuity equation:\n";
+    std::cout << "\n solves the diffusion equation:\n";
     std::cout << "    f_t - laplacian f = s(t, x)\n";
     std::cout << " with Dirichlet boundary conditions \n"
                  " and source term that generates a known artificial solution\n\n";

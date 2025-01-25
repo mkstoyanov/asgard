@@ -108,10 +108,15 @@ namespace asgard::time_advance
  * \endinternal
  */
 template<typename P>
-struct rungekutta3
+struct rungekutta
 {
   //! Default empty stepper
-  rungekutta3() = default;
+  rungekutta() = default;
+  //! Default empty stepper
+  rungekutta(method rk) : rktype(rk)
+  {
+    expect(rktype == method::rk2 or rktype == method::rk3);
+  }
   //! Performs RK3 step forward in time, uses the current and next step
   void next_step(discretization_manager<P> const &dist, std::vector<P> const &current,
                  std::vector<P> &next) const;
@@ -119,6 +124,8 @@ struct rungekutta3
   static bool constexpr needs_solver = false;
 
 private:
+  method rktype = method::rk3;
+
   // workspace vectors
   mutable std::vector<P> k1, k2, k3, s1;
 };
@@ -126,9 +133,10 @@ private:
 /*!
  * \internal
  * \ingroup asgard_time_advance
- * \brief Crank-Nicolson 1-stage method, 2th order accuracy in step-size
+ * \brief Crank-Nicolson or Backward-Euler 1-stage method, 2nd or 1st order accuracy in step-size
  *
- * Simple 1-stage implicit method, unconditional stability.
+ * The two methods are simple variants of each other, this class will read the correct
+ * one from the options and make the adjustments.
  * \endinternal
  */
 template<typename P>
@@ -137,7 +145,12 @@ struct crank_nicolson
   //! Default empty stepper
   crank_nicolson() = default;
   //! Initialize the stepper and
-  crank_nicolson(prog_opts const &options) : solver(options) {}
+  crank_nicolson(prog_opts const &options)
+      : method(options.step_method.value()), solver(options)
+  {
+    expect(method == time_advance::method::cn or
+           method == time_advance::method::beuler);
+  }
   //! Performs Crank-Nicolson step forward in time, uses the current and next step
   void next_step(discretization_manager<P> const &dist, std::vector<P> const &current,
                  std::vector<P> &next) const;
@@ -157,6 +170,7 @@ struct crank_nicolson
   }
 
 private:
+  time_advance::method method = time_advance::method::cn;
   // the solver used
   mutable solver_manager<P> solver;
   // workspace
@@ -190,7 +204,7 @@ struct time_advance_manager
   bool needs_solver() const {
     switch (method.index()) {
       case 0:
-        return time_advance::rungekutta3<P>::needs_solver;
+        return time_advance::rungekutta<P>::needs_solver;
       case 1:
         return time_advance::crank_nicolson<P>::needs_solver;
       default:
@@ -235,7 +249,7 @@ struct time_advance_manager
   //! holds the common time-stepping parameters
   time_data<P> data;
   //! wrapper around the specific method being used
-  std::variant<time_advance::rungekutta3<P>, time_advance::crank_nicolson<P>> method;
+  std::variant<time_advance::rungekutta<P>, time_advance::crank_nicolson<P>> method;
 };
 
 /*!

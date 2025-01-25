@@ -20,7 +20,7 @@ namespace asgard
 
 // forward declaration that can befriend relevant classes
 template<typename P>
-class h5writer;
+class h5manager;
 
 /*!
  * \ingroup asgard_common_options
@@ -94,7 +94,6 @@ enum class PDE_opts
   diffusion_1,
   diffusion_2,
   vlasov_lb_full_f,
-  vlasov_two_stream,
   relaxation_1x1v,
   relaxation_1x2v,
   relaxation_1x3v,
@@ -187,10 +186,14 @@ namespace time_advance
  */
 enum class method
 {
+  //! Runge Kutta 2-stage method, 3d order accuracy
+  rk2 = 0,
   //! Runge Kutta 3-stage method, 4th order accuracy
-  rk3 = 0,
+  rk3,
   //! Implicit Crank-Nicolson, second order
   cn,
+  //! Implicit Backward-Euler, first order
+  beuler,
   //! implicit solve, backward Euler
   imp,
   //! (default) explicit Runge–Kutta

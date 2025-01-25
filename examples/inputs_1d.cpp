@@ -20,7 +20,6 @@
  * where both \b f and \b s are defined over domain
  * \f[ (-\pi N_w, \pi N_w) \f]
  * where N-w is the number of waves.
- * The number of waves is defined through an input file with custom options.
  *
  * \par
  * The right right-hand-side source is chosen so the exact solution
@@ -28,12 +27,12 @@
  * \f[ f(t, x) = \cos(t) \sin(x) \f]
  *
  * \par
- * The example comes with a companion file inputs_1d.py that demonstrates
- * plotting with Python and matplotlib.
+ * This example demonstrates the use of a input file to set problem parameters.
+ * Two example input files are included and a companion Python script.
  */
 
 /*!
- * \ingroup circumference
+ * \ingroup asgard_examples_continuity_2d
  * \brief Default precision for this example, favors double-precision
  *
  * if ASGarD is compiled with double precision, this defaults to double
@@ -99,7 +98,7 @@ int main(int argc, char **argv)
   }
 
   // make the 1d domain
-  asgard::pde_domain<precision> domain({{-PI * num_waves, PI * num_waves}, });
+  asgard::pde_domain domain({{-PI * num_waves, PI * num_waves}, });
 
   // setting some default options
   // defaults are used only the corresponding values are missing from the command line
@@ -110,7 +109,7 @@ int main(int argc, char **argv)
   int const max_level = options.max_level();
 
   // smallest cell size that we can have
-  precision const dx = domain.min_cell_size(max_level);
+  double const dx = domain.min_cell_size(max_level);
 
   // the cfl condition is that dt < stability-region * dx
   // RK3 stability region is 0.1
@@ -123,12 +122,11 @@ int main(int argc, char **argv)
   options.set_default_title("Example inputs 1D");
 
   // creates a pde description
-  asgard::PDEv2<precision> pde(options, domain);
+  asgard::PDEv2 pde(options, domain);
 
   // one dimensional divergence term using upwind flux
-  pde += asgard::term_1d<precision>{asgard::term_div(asgard::flux_type::upwind,
-                                                     asgard::boundary_type::periodic,
-                                                     precision{1})};
+  pde += asgard::term_1d{asgard::term_div(1, asgard::flux_type::upwind,
+                                             asgard::boundary_type::periodic)};
 
   // exact solution
   auto exact_x = [](std::vector<precision> const &x, precision /* time */,

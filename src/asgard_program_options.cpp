@@ -77,10 +77,10 @@ Options          Short   Value      Description
 
 <<< time stepping options >>>
 -step-method     -s      string     accepts (v1): expl/impl/imex
-                                    accepts (v2): rk3/cn
-                                    indicates explicit (rk3), explicit (backward-Euler) or
+                                    accepts (v2): rk2/rk3/cn/crank-nicolson/be/backwar-euler
+                                    indicates explicit (rk3), implicit (backward-Euler) or
                                     imex (implicit-explicit) time-stepping scheme
-                                    implicit crank-nicolson (cn)
+                                    implicit crank-nicolson (cn) or backwar-euler (be)
 -time            -t      double     accepts: positive number (zero for no stepping)
                                     Final time for integration (v2 pdes only)
 -num-steps       -n      int        Positive integer indicating the number of time steps to take.
@@ -138,7 +138,6 @@ diffusion_1     1D diffusion equation: df/dt = d^2 f/dx^2
 diffusion_2     2D (1x-1y) heat equation. df/dt = d^2 f/dx^2 + d^2 f/dy^2
 advection_1     1D test using continuity equation. df/dt = -2*df/dx - 2*sin(x)
 vlasov          Vlasov lb full f. df/dt = -v*grad_x f + div_v((v-u)f + theta*grad_v f)
-two_stream      Vlasov two-stream. df/dt = -v*grad_x f -E*grad_v f
 
 fokkerplanck_1d_pitch_E_case1    1D pitch angle collisional term:
                                  df/dt = d/dz ( (1-z^2) df/dz, f0 is constant.
@@ -335,13 +334,19 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv,
     }
     break;
     case optentry::step_method: {
+      // allow longer options here, short for the command line
+      // long for more expressive files
       auto selected = move_process_next();
       if (not selected)
         throw std::runtime_error(report_no_value());
-      if (*selected == "rk3")
+      if (*selected == "rk2")
+        step_method = time_advance::method::rk2;
+      else if (*selected == "rk3")
         step_method = time_advance::method::rk3;
-      else if (*selected == "cn")
+      else if (*selected == "cn" or *selected == "crank-nicolson")
         step_method = time_advance::method::cn;
+      else if (*selected == "be" or *selected == "backward-euler")
+        step_method = time_advance::method::beuler;
       else if (*selected == "expl")
         step_method = time_advance::method::exp;
       else if (*selected == "impl")
@@ -643,7 +648,6 @@ std::optional<PDE_opts> prog_opts::get_pde_opt(std::string_view const &pde_str)
       {"diffusion_2", PDE_opts::diffusion_2},
       {"advection_1", PDE_opts::advection_1},
       {"vlasov", PDE_opts::vlasov_lb_full_f},
-      {"two_stream", PDE_opts::vlasov_two_stream},
       {"relaxation_1x1v", PDE_opts::relaxation_1x1v},
       {"relaxation_1x2v", PDE_opts::relaxation_1x2v},
       {"relaxation_1x3v", PDE_opts::relaxation_1x3v},

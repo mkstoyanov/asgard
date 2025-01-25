@@ -35,6 +35,11 @@
  * This example provides a flexibility in the choice of the dimension
  * which can be controlled from the command line.
  * The range in dimension is (-2 PI, 2 PI)
+ *
+ * \par
+ * The interesting part of this example is setup of a PDE in arbitrary dimension
+ * (between 1 and 6) and the use of the asgard::prog_opts to handle custom
+ * project options.
  */
 
 /*!
@@ -101,9 +106,8 @@ asgard::PDEv2<P> make_continuity_pde(int num_dims, asgard::prog_opts options) {
 
   // one dimensional divergence term using upwind flux
   // multiple terms can be chained to obtain higher order derivatives
-  asgard::term_1d<P> div = asgard::term_div(asgard::flux_type::upwind,
-                                            asgard::boundary_type::periodic,
-                                            P{1});
+  asgard::term_1d<P> div = asgard::term_div<P>(1, asgard::flux_type::upwind,
+                                               asgard::boundary_type::periodic);
 
   // the multi-dimensional divergence, initially set to identity in md
   std::vector<asgard::term_1d<P>> ops(num_dims);
@@ -250,8 +254,6 @@ void self_test();
  *
  * The main() processes the command line arguments and calls both
  * make_continuity_pde() and get_error_l2().
- * The interesting part is how to add custom command line parameters
- * to the default ones provided by ASGarD.
  *
  * \snippet continuity.cpp continuity_md main
  */
@@ -300,10 +302,10 @@ int main(int argc, char** argv)
   if (not opt_dims)
     opt_dims = options.extra_cli_value<int>("-dm");
 
-  int const num_dims = opt_dims.value_or(3);
+  int const num_dims = opt_dims.value_or(2);
 
   if (not opt_dims)
-    std::cout << "no -dims provided, setting a default 3D problem\n";
+    std::cout << "no -dims provided, setting a default 2D problem\n";
   else
     std::cout << "setting a " << num_dims << "D problem\n";
 
@@ -475,6 +477,19 @@ void self_test() {
 
   // adaptivity is tricky near the time-period when the solution vanishes
   dolongtest<double>(0.03, 2, "-l 4 -m 8 -t 10 -a 1.E-2");
+
+  // different explicit time-stepping
+  dotest<double>(0.05, 2, "-s rk2 -l 5 -n 20");
+  dotest<double>(0.01, 2, "-s rk2 -l 6 -n 10");
+
+  // implicit stepping is fast, test some of the implicit methods
+  dotest<double>(0.05, 1, "-l 7 -n 20 -sv direct -s be -dt 0.05");
+  dotest<double>(0.025, 1, "-l 7 -n 20 -sv direct -s be -dt 0.025");
+  dotest<double>(0.01, 1, "-l 7 -n 20 -sv direct -s be -dt 0.01");
+
+  dotest<double>(0.001, 1, "-l 7 -n 20 -sv direct -s cn -dt 0.05");
+  dotest<double>(0.00025, 1, "-l 7 -n 20 -sv direct -s cn -dt 0.025");
+  dotest<double>(1.E-5, 1, "-l 7 -n 20 -sv direct -s cn -dt 0.01");
 #endif
 
 #ifdef ASGARD_ENABLE_FLOAT
@@ -500,6 +515,12 @@ void self_test() {
   dotest<float>(0.02, 2, "-l 5 -n 20", 10);
 
   dolongtest<float>(0.02, 2, "-l 5 -t 10");
+
+  dotest<float>(0.05, 1, "-l 7 -n 20 -sv direct -s be -dt 0.05");
+  dotest<float>(0.025, 1, "-l 7 -n 20 -sv direct -s be -dt 0.025");
+
+  dotest<float>(0.02, 1, "-l 7 -n 20 -sv direct -s cn -dt 0.06");
+  dotest<float>(0.005, 1, "-l 7 -n 20 -sv direct -s cn -dt 0.03");
 #endif
 }
 

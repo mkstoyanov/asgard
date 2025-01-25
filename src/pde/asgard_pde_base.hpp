@@ -30,15 +30,6 @@ enum class boundary_condition
   free
 };
 
-enum class boundary_type
-{
-  periodic,
-  dirichlet,
-  free,
-  left_free,
-  right_free,
-};
-
 // helper - single element size
 auto const element_segment_size = [](auto const &pde) {
   int const degree = pde.get_dimensions()[0].get_degree();
@@ -66,6 +57,7 @@ enum class pterm_dependence
 {
   none, // nothing special, uses generic g-func
   electric_field, // depends on the electric field
+  electric_field_only, // depends only on the electric filed and not position
   electric_field_infnrm, // depends on the max abs( electric_field )
   moment_divided_by_density, // moment divided by moment 0
   lenard_bernstein_coll_theta_1x1v,
@@ -1321,13 +1313,6 @@ inline void add_lenard_bernstein_collisions_1x3v(P const nu, term_set<P> &terms)
   terms.push_back({mass_theta, I, nu_div_grad, I});
   terms.push_back({mass_theta, I, I, nu_div_grad});
 }
-#endif
-
-/*!
- * \defgroup asgard_pde_definition ASGarD PDE Definition
- *
- * Tools for defining a PDE description and discretization scheme.
- */
 
 /*!
  * \ingroup asgard_pde_definition
@@ -1342,6 +1327,39 @@ using md_func = std::function<void(P t, vector2d<P> const &, std::vector<P> &)>;
 template<typename P>
 using md_func_f = std::function<void(P t, vector2d<P> const &,
                                      std::vector<P> const &, std::vector<P> &)>;
+
+#endif // doxygen skip
+
+/*!
+ * \defgroup asgard_pde_definition ASGarD PDE Definition
+ *
+ * Tools for defining a PDE description and discretization scheme.
+ */
+
+/*!
+ * \ingroup asgard_pde_definition
+ * \brief Defines the boundary conditions for separable operator
+ *
+ * The separable operators are always defined on a 1d interval. Periodic conditions
+ * "connect" the flux on the left-most and right-most cells, so that information
+ * moving out through the boundary is added to the other side. Dirichlet boundary
+ * imposes zero flux through the matrix entries and non-homogeneous conditions
+ * have to appear as a source. Free boundary conditions allow the flux to be
+ * determined by the dynamics of the PDE and the current field.
+ */
+enum class boundary_type
+{
+  //! periodic boundary conditions
+  periodic,
+  //! fixed flux at the boundary
+  dirichlet,
+  //! free boundary condition
+  free,
+  //! free boundary on the left, Dirichlet on the right
+  left_free,
+  //! free boundary on the right, Dirichlet on the left
+  right_free,
+};
 
 /*!
  * \ingroup asgard_pde_definition
@@ -1373,10 +1391,10 @@ struct term_identity {};
  * \ingroup asgard_pde_definition
  * \brief Intermediate container for a mass term
  */
-template<typename P>
+template<typename P = default_precision>
 struct term_mass {
   //! make a mass term with constant coefficient
-  term_mass(P cc) : const_coeff(cc) {}
+  term_mass(no_deduce<P> cc) : const_coeff(cc) {}
   //! make a mass term with given right hand side coefficient
   term_mass(sfixed_func1d<P> rhs) : right(std::move(rhs)) {}
   //! make a mass term with given left and right hand side coefficients
@@ -1395,25 +1413,24 @@ struct term_mass {
  * \ingroup asgard_pde_definition
  * \brief Intermediate container for a grad term, includes flux and boundary conditions
  */
-template<typename P>
+template<typename P = default_precision>
 struct term_grad {
   //! make a grad term with constant coefficient
-  term_grad(flux_type flx, boundary_type bnd, P cc)
-    : flux(flx), boundary(bnd), const_coeff(cc)
+  term_grad(no_deduce<P> cc, flux_type flx, boundary_type bnd)
+    : const_coeff(cc), flux(flx), boundary(bnd)
+  {}
+  //! make a grad term with constant coefficient 1
+  term_grad(flux_type flx, boundary_type bnd)
+    : flux(flx), boundary(bnd)
   {}
   //! make a grad term with given right hand side coefficient
-  term_grad(flux_type flx, boundary_type bnd, sfixed_func1d<P> frhs = nullptr)
-    : flux(flx), boundary(bnd), right(std::move(frhs))
+  term_grad(sfixed_func1d<P> frhs, flux_type flx, boundary_type bnd)
+    : right(std::move(frhs)), flux(flx), boundary(bnd)
   {}
   //! make a grad term with both right and left hand side coefficients
-  term_grad(flux_type flx, boundary_type bnd, sfixed_func1d<P> flhs, sfixed_func1d<P> frhs)
-    : flux(flx), boundary(bnd), left(std::move(flhs)), right(std::move(frhs))
+  term_grad(sfixed_func1d<P> flhs, sfixed_func1d<P> frhs, flux_type flx, boundary_type bnd)
+    : left(std::move(flhs)), right(std::move(frhs)), flux(flx), boundary(bnd)
   {}
-
-  //! flux type
-  flux_type flux;
-  //! boundary type
-  boundary_type boundary;
 
   //! constant coefficient, if left/right-hand-side functions are null
   P const_coeff = 0;
@@ -1421,31 +1438,35 @@ struct term_grad {
   sfixed_func1d<P> left;
   //! right-hand-side function
   sfixed_func1d<P> right;
+
+  //! flux type
+  flux_type flux;
+  //! boundary type
+  boundary_type boundary;
 };
 
 /*!
  * \ingroup asgard_pde_definition
  * \brief Intermediate container for a div term, includes flux and boundary conditions
  */
-template<typename P>
+template<typename P = default_precision>
 struct term_div {
   //! make a grad term with constant coefficient
-  term_div(flux_type flx, boundary_type bnd, P cc)
-    : flux(flx), boundary(bnd), const_coeff(cc)
+  term_div(no_deduce<P> cc, flux_type flx, boundary_type bnd)
+    : const_coeff(cc), flux(flx), boundary(bnd)
+  {}
+  //! make a grad term with constant coefficient 1
+  term_div(flux_type flx, boundary_type bnd)
+    : const_coeff(1), flux(flx), boundary(bnd)
   {}
   //! make a grad term with given right hand side coefficient
-  term_div(flux_type flx, boundary_type bnd, sfixed_func1d<P> frhs = nullptr)
-    : flux(flx), boundary(bnd), right(std::move(frhs))
+  term_div(sfixed_func1d<P> frhs, flux_type flx, boundary_type bnd)
+    : right(std::move(frhs)), flux(flx), boundary(bnd)
   {}
-  //! make a grad term with both right and left hand side coefficients
-  term_div(flux_type flx, boundary_type bnd, sfixed_func1d<P> flhs, sfixed_func1d<P> frhs)
-    : flux(flx), boundary(bnd), left(std::move(flhs)), right(std::move(frhs))
+  //! make a grad term with both left and right hand side coefficients
+  term_div(sfixed_func1d<P> flhs, sfixed_func1d<P> frhs, flux_type flx, boundary_type bnd)
+    : left(std::move(flhs)), right(std::move(frhs)), flux(flx), boundary(bnd)
   {}
-
-  //! flux type
-  flux_type flux;
-  //! boundary type
-  boundary_type boundary;
 
   //! constant coefficient, if left/right-hand-side functions are null
   P const_coeff = 0;
@@ -1453,6 +1474,11 @@ struct term_div {
   sfixed_func1d<P> left;
   //! right-hand-side function
   sfixed_func1d<P> right;
+
+  //! flux type
+  flux_type flux;
+  //! boundary type
+  boundary_type boundary;
 };
 
 /*!
@@ -1460,6 +1486,35 @@ struct term_div {
  * \brief Intermediate container for chain of one-dimensional terms
  */
 struct term_chain {};
+
+/*!
+ * \ingroup asgard_pde_definition
+ * \brief Mass term that depends on the electric field
+ */
+template<typename P = default_precision>
+struct mass_electric {
+  //! mass based only on the electric field only, same as rhs being identity function
+  mass_electric() {}
+  //! no left hand side, right side depends only on the field
+  mass_electric(sfixed_func1d<P> rhs) : right(std::move(rhs)) {}
+  //! with left hand side, right side depends only on the field
+  mass_electric(sfixed_func1d<P> lhs, sfixed_func1d<P> rhs)
+    : left(std::move(lhs)), right(std::move(rhs))
+  {}
+  //! no left hand side, right side depends only on the field and position
+  mass_electric(sfixed_func1d_f<P> rhs_f) : right_f(std::move(rhs_f)) {}
+  //! with left hand side, right side depends only on the field and position
+  mass_electric(sfixed_func1d<P> lhs, sfixed_func1d_f<P> rhs_f)
+    : left(std::move(lhs)), right_f(std::move(rhs_f))
+  {}
+
+  //! left-hand-side function
+  sfixed_func1d<P> left;
+  //! right-hand-side function, field only no spatial dependence
+  sfixed_func1d<P> right;
+  //! right-hand-side function, depends on position and field
+  sfixed_func1d_f<P> right_f;
+};
 
 // forward declaration so it can be set as a friend
 template<typename P>
@@ -1484,9 +1539,9 @@ struct term_manager;
  *   grad or div with opposing downwind/upwind flux
  * - a penalty term is equivalent to div/grad with central flux
  *
- * Chain-of-chains is not allowed as it makes little sense.
+ * Chain-of-chains is not allowed as it is unnecessary.
  */
-template<typename P>
+template<typename P = default_precision>
 class term_1d
 {
 public:
@@ -1572,6 +1627,16 @@ public:
   }
   //! make a chain term, add terms later with add_term() or +=
   term_1d(term_chain) : optype_(operation_type::chain) {}
+  //! make a term that depends on the electric field
+  term_1d(mass_electric<P> elmass)
+    : optype_(operation_type::mass), change_(changes_with::time),
+      lhs_(std::move(elmass.left)), rhs_(std::move(elmass.right)),
+      field_f_(std::move(elmass.right_f))
+  {
+    depends_ = (field_f_) ? pterm_dependence::electric_field
+                          : pterm_dependence::electric_field_only;
+  }
+
   //! indicates whether this is an identity term
   bool is_identity() const { return (optype_ == operation_type::identity); }
   //! indicates whether this is a mass term
@@ -1732,7 +1797,7 @@ private:
  * A chain can be build only of separable and interpolation terms, recursive chains
  * are not allowed.
  */
-template<typename P>
+template<typename P = default_precision>
 class term_md
 {
 public:
@@ -1913,7 +1978,7 @@ private:
  * When remaining steps hits 0, current_time is equal to final_time,
  * give or take some machine precision.
  */
-template<typename P>
+template<typename P = default_precision>
 class time_data
 {
 public:
@@ -1992,7 +2057,7 @@ public:
   }
 
   //! allows writer to save/load the time data
-  friend class h5writer<P>;
+  friend class h5manager<P>;
 
 private:
   time_advance::method smethod_ = time_advance::method::exp;
@@ -2039,7 +2104,7 @@ inline std::ostream &operator<<(std::ostream &os, time_data<P> const &dtime)
  * The first two are defined in the constructor of the object and the others
  * can be specified later. See the included examples.
  */
-template<typename P>
+template<typename P = default_precision>
 class PDEv2
 {
 public:
@@ -2198,7 +2263,7 @@ public:
   md_func<P> const &source_md() const { return sources_md_; }
 
   //! allows writer to save/load the pde and options
-  friend class h5writer<P>;
+  friend class h5manager<P>;
   //! allows the term_manager to access the terms
   friend struct term_manager<P>;
 

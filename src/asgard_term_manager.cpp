@@ -6,11 +6,14 @@ namespace asgard
 {
 
 template<typename P>
-void term_entry<P>::set_perms()
+term_entry<P>::term_entry(term_md<P> tin)
+  : tmd(std::move(tin))
 {
   expect(not tmd.is_chain());
-  if (tmd.is_interpolatory()) // no permutation to set
+  if (tmd.is_interpolatory()) {
+    deps[0] = {false, 0}; // set interpolation deps here
     return;
+  }
 
   int const num_dims = tmd.num_dims();
   std::vector<int> active_dirs;
@@ -27,9 +30,42 @@ void term_entry<P>::set_perms()
           std::swap(active_dirs.front(), active_dirs.back());
       }
     }
+
+    deps[d] = get_deps(t1d);
   }
 
   perm = kronmult::permutes(active_dirs, flux_dir);
+}
+
+template<typename P>
+mom_deps term_entry<P>::get_deps(term_1d<P> const &t1d) {
+  auto process_dep = [](term_1d<P> const &single)
+    -> mom_deps {
+      switch (single.depends()) {
+        case pterm_dependence::electric_field:
+        case pterm_dependence::electric_field_only:
+          return {true, 1};
+        case pterm_dependence::moment_divided_by_density:
+          return {false, std::abs(single.moment())};
+        case pterm_dependence::lenard_bernstein_coll_theta_1x1v:
+          return {false, 3};
+        case pterm_dependence::lenard_bernstein_coll_theta_1x2v:
+          return {false, 5};
+        case pterm_dependence::lenard_bernstein_coll_theta_1x3v:
+          return {false, 7};
+        default:
+          return {};
+      };
+    };
+
+  if (t1d.is_chain()) {
+    mom_deps result;
+    for (int i : iindexof(t1d.num_chain()))
+      result += process_dep(t1d[i]);
+    return result;
+  } else {
+    return process_dep(t1d);
+  }
 }
 
 template<typename P>
@@ -62,16 +98,13 @@ term_manager<P>::term_manager(PDEv2<P> &pde)
       if (num_chain >= 3 and t2.empty())
         t2.resize(1);
 
-      ir->num_chain = num_chain;
-      for (int c : iindexof(num_chain)) {
-        ir->tmd = std::move(pde_terms[i].chain_[c]);
-        ir->set_perms();
-        ++ir;
+      *ir = term_entry<P>(std::move(pde_terms[i].chain_[0]));
+      ir++->num_chain = num_chain;
+      for (int c = 1; c < num_chain; c++) {
+        *ir++ = term_entry<P>(std::move(pde_terms[i].chain_[c]));
       }
     } else {
-      ir->tmd = std::move(pde_terms[i]);
-      ir->set_perms();
-      ir += 1;
+      *ir++ = term_entry<P>(std::move(pde_terms[i]));
     }
   }
 
@@ -79,6 +112,18 @@ term_manager<P>::term_manager(PDEv2<P> &pde)
     xleft[d]  = pde.domain().xleft(d);
     xright[d] = pde.domain().xright(d);
   }
+}
+
+template<typename P>
+mom_deps term_manager<P>::find_deps() const
+{
+  mom_deps deps;
+
+  for (auto const &tentry : terms)
+    for (int d : iindexof(num_dims))
+      deps += tentry.deps[d];
+
+  return deps;
 }
 
 template<typename P>
@@ -109,32 +154,42 @@ void term_manager<P>::rebuld_term(
     if (t1d.change() == changes_with::level and terms[tid].level[d] == level)
       continue;
 
-    bool is_diag = t1d.is_mass();
-    if (t1d.is_chain()) {
-      rebuld_chain(d, t1d, level, is_diag, wraw_diag, wraw_tri);
-    } else {
-      build_raw_mat(d, t1d, level, wraw_diag, wraw_tri);
-    }
-    // the build/rebuild put the result in raw_diag or raw_tri
-    if (is_diag)
-      terms[tid].coeffs[d] = hier.diag2hierarchical(wraw_diag, level, conn);
-    else
-      terms[tid].coeffs[d] = hier.tri2hierarchical(wraw_tri, level, conn);
-
-    // build the ADI preconditioner here
-    if (precon == preconditioner_opts::adi) {
-      if (is_diag) {
-        to_euler(legendre.pdof, alpha, wraw_diag);
-        psedoinvert(legendre.pdof, wraw_diag, raw_diag0);
-        terms[tid].adi[d] = hier.diag2hierarchical(raw_diag0, level, conn);
-      } else {
-        to_euler(legendre.pdof, alpha, wraw_tri);
-        psedoinvert(legendre.pdof, wraw_tri, raw_tri0);
-        terms[tid].adi[d] = hier.tri2hierarchical(raw_tri0, level, conn);
-      }
-    }
-
+    rebuld_term1d(terms[tid], d, level, conn, hier, precon, alpha);
   } // move to next dimension d
+}
+
+template<typename P>
+void term_manager<P>::rebuld_term1d(
+    term_entry<P> &tentry, int const dim, int level,
+    connection_patterns const &conn, hierarchy_manipulator<P> const &hier,
+    preconditioner_opts precon, P alpha)
+{
+  auto const &t1d = tentry.tmd.dim(dim);
+
+  bool is_diag = t1d.is_mass();
+  if (t1d.is_chain()) {
+    rebuld_chain(dim, t1d, level, is_diag, wraw_diag, wraw_tri);
+  } else {
+    build_raw_mat(dim, t1d, level, wraw_diag, wraw_tri);
+  }
+  // the build/rebuild put the result in raw_diag or raw_tri
+  if (is_diag)
+    tentry.coeffs[dim] = hier.diag2hierarchical(wraw_diag, level, conn);
+  else
+    tentry.coeffs[dim] = hier.tri2hierarchical(wraw_tri, level, conn);
+
+  // build the ADI preconditioner here
+  if (precon == preconditioner_opts::adi) {
+    if (is_diag) {
+      to_euler(legendre.pdof, alpha, wraw_diag);
+      psedoinvert(legendre.pdof, wraw_diag, raw_diag0);
+      tentry.adi[dim] = hier.diag2hierarchical(raw_diag0, level, conn);
+    } else {
+      to_euler(legendre.pdof, alpha, wraw_tri);
+      psedoinvert(legendre.pdof, wraw_tri, raw_tri0);
+      tentry.adi[dim] = hier.tri2hierarchical(raw_tri0, level, conn);
+    }
+  }
 }
 
 template<typename P>
@@ -147,12 +202,30 @@ void term_manager<P>::build_raw_mat(
   switch (t1d.optype())
   {
     case operation_type::mass:
-      if (t1d.rhs()) {
-        gen_diag_cmat<P, operation_type::mass, rhs_type::is_func>
-          (legendre, xleft[d], xright[d], level, t1d.rhs(), 0, raw_diag);
-      } else {
-        gen_diag_cmat<P, operation_type::mass, rhs_type::is_const>
-          (legendre, xleft[d], xright[d], level, nullptr, t1d.rhs_const(), raw_diag);
+      switch (t1d.depends()) {
+        case pterm_dependence::electric_field_only:
+          if (t1d.rhs()) {
+            // using w1 as workspaces, it probably has enough space already
+            size_t const n = kwork.w1.size();
+            t1d.rhs(cdata.electric_field, kwork.w1);
+            gen_diag_cmat_pwc<P>(legendre, level, kwork.w1, raw_diag);
+            kwork.w1.resize(n);
+          } else {
+            gen_diag_cmat_pwc<P>(legendre, level, cdata.electric_field, raw_diag);
+          }
+          break;
+        case pterm_dependence::electric_field:
+          throw std::runtime_error("el-field with position depend is not done (yet)");
+          break;
+        default:
+          if (t1d.rhs()) {
+            gen_diag_cmat<P, operation_type::mass>
+              (legendre, xleft[d], xright[d], level, t1d.rhs(), nullptr, raw_diag);
+          } else {
+            gen_diag_cmat<P, operation_type::mass>
+              (legendre, level, t1d.rhs_const(), raw_diag);
+          }
+          break;
       }
       break;
     case operation_type::div:
@@ -187,8 +260,8 @@ void term_manager<P>::build_raw_mat(
       break;
   }
   if (t1d.lhs()) { // we have a lhs mass
-    gen_diag_cmat<P, operation_type::mass, rhs_type::is_func>
-      (legendre, xleft[d], xright[d], level, t1d.lhs(), 0, raw_mass);
+    gen_diag_cmat<P, operation_type::mass>
+      (legendre, xleft[d], xright[d], level, t1d.lhs(), nullptr, raw_mass);
     if (t1d.is_mass())
       raw_mass.apply_inverse(legendre.pdof, raw_diag);
     else

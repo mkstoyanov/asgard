@@ -28,7 +28,7 @@ namespace asgard
  *
  * Time integration can be performed with the advance_time() function.
  */
-template<typename precision>
+template<typename precision = default_precision>
 class discretization_manager
 {
 public:
@@ -256,7 +256,7 @@ public:
   void set_verbosity(verbosity_level v) const { verb = v; }
 
   //! report time progress
-  void progress_report(std::ostream &os = std::cout) {
+  void progress_report(std::ostream &os = std::cout) const {
     os << "time-step: " << std::setw(10) << tools::split_style(stepper.data.step()) << "  time: ";
     std::string s = std::to_string(stepper.data.time());
 
@@ -274,6 +274,16 @@ public:
       os << '\n';
     }
   }
+  //! safe final result and print statistics, if verbosity allows it and output file is given
+  void final_output() const {
+    save_final_snapshot();
+    if (not stop_verbosity()) {
+      progress_report();
+      if (asgard::tools::timer.enabled())
+        std::cout << asgard::tools::timer.report() << '\n';
+    }
+  }
+
   //! projects and sum-of-separable functions and md_func onto the current basis
   void project_function(std::vector<separable_func<precision>> const &sep,
                         md_func<precision> const &fmd, std::vector<precision> &out) const;
@@ -355,7 +365,7 @@ public:
   friend void advance_time_v2<precision>(discretization_manager<precision> &disc,
                                          int64_t num_steps);
 
-  friend class h5writer<precision>;
+  friend class h5manager<precision>;
 
   friend struct time_advance_manager<precision>;
 #endif // __ASGARD_DOXYGEN_SKIP_INTERNAL
@@ -432,7 +442,7 @@ private:
   // moments, new implementation
   mutable std::optional<moments1d<precision>> moms1d;
   // poisson solver data
-  mutable std::optional<solvers::poisson_data<precision>> poisson_solver;
+  mutable solvers::poisson<precision> poisson;
 
   //! term manager holding coefficient matrices and kronmult meta-data
   mutable term_manager<precision> terms;

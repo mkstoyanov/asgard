@@ -68,7 +68,7 @@ discretization_manager<precision>::discretization_manager(
   if (pde->do_poisson_solve())
   {
     auto const &dim = pde->get_dimensions()[0];
-    poisson_solver.emplace(degree_, dim.domain_min, dim.domain_max, dim.get_level());
+    poisson = solvers::poisson(degree_, dim.domain_min, dim.domain_max, dim.get_level());
 
     matrices.edata.electric_field.resize(fm::ipow2(dim.get_level()));
 
@@ -272,8 +272,18 @@ void discretization_manager<precision>::start_cold()
     std::cout << "initial degrees of freedom: " << tools::split_style(dof) << "\n\n";
   }
 
-  // after setting the initial conditions, we do the moment/poisson calculations
-  // then we can rebuild the terms
+  // process the moments, can compute moments based on the initial conditions
+  mom_deps deps = terms.find_deps();
+  if (deps.num_moments > 0) {
+    moms1d = moments1d(deps.num_moments, degree_, pde2.max_level(), pde2.domain());
+    if (deps.poisson) {
+      poisson = solvers::poisson(degree_, pde2.domain().xleft(0), pde2.domain().xright(0),
+                                 sgrid.current_level(0));
+
+      // skip the first solve, putting in dummy data for the term construction
+      terms.cdata.electric_field.resize(fm::ipow2(sgrid.current_level(0)));
+    }
+  }
 
   if (stepper.needed_precon() == preconditioner_opts::adi) {
     terms.build_matrices(sgrid, conn, hier, preconditioner_opts::adi,
@@ -290,8 +300,8 @@ void discretization_manager<precision>::restart_from_file()
 {
 #ifdef ASGARD_USE_HIGHFIVE
   time_data<precision> dtime;
-  h5writer<precision>::read(pde2.options().restart_file, high_verbosity(), pde2, sgrid,
-                            dtime, state);
+  h5manager<precision>::read(pde2.options().restart_file, high_verbosity(), pde2, sgrid,
+                             dtime, state);
 
   auto const &options = pde2.options();
 
@@ -306,8 +316,10 @@ void discretization_manager<precision>::restart_from_file()
   terms.prapare_workspace(sgrid);
   // initialize the moments here, we already have the the state
   if (stepper.needed_precon() == preconditioner_opts::adi) {
+    precision const substep
+        = (options.step_method.value() == time_advance::method::cn) ? 0.5 : 1;
     terms.build_matrices(sgrid, conn, hier, preconditioner_opts::adi,
-                         0.5 * stepper.data.dt());
+                         substep * stepper.data.dt());
   } else
     terms.build_matrices(sgrid, conn, hier);
 
@@ -330,7 +342,7 @@ void discretization_manager<precision>::restart_from_file()
 template<typename precision>
 void discretization_manager<precision>::save_snapshot2(std::filesystem::path const &filename) const {
 #ifdef ASGARD_USE_HIGHFIVE
-  h5writer<precision>::write(pde2, degree_, sgrid, stepper.data, state, filename);
+  h5manager<precision>::write(pde2, degree_, sgrid, stepper.data, state, filename);
 #else
   ignore(filename);
   throw std::runtime_error("saving to a file requires CMake option -DASGARD_USE_HIGHFIVE=ON");
@@ -598,6 +610,11 @@ discretization_manager<precision>::ode_rhs_v2(
     precision time, std::vector<precision> const &current,
     std::vector<precision> &R) const
 {
+  if (poisson) { // if we have a Poisson dependence
+    do_poisson_update(current);
+    terms.rebuild_poisson(sgrid, conn, hier);
+  }
+
   {
     tools::time_event performance_("ode-rhs kronmult");
     terms.apply_all(sgrid, conn, -1, current, 0, R);
@@ -694,26 +711,38 @@ discretization_manager<precision>::project_function(
 
 template<typename precision> void
 discretization_manager<precision>::do_poisson_update(std::vector<precision> const &field) const {
-  if (not poisson_solver)
+  if (not poisson)
     return; // nothing to update, no term has Poisson dependence
 
-  auto const &table = grid.get_table();
-  expect(field.size() == static_cast<size_t>(table.size() * fm::ipow(degree_ + 1, pde->num_dims())));
+  if (pde) { // version 1
+    auto const &table = grid.get_table();
+    expect(field.size() == static_cast<size_t>(table.size() * fm::ipow(degree_ + 1, pde->num_dims())));
 
-  int const level = pde->get_dimensions()[0].get_level();
-  std::vector<precision> moment0;
-  moms1d->project_moment(0, level, field, table, moment0);
+    int const level = pde->get_dimensions()[0].get_level();
+    std::vector<precision> moment0;
+    moms1d->project_moment(0, level, field, table, moment0);
 
-  hier.reconstruct1d(1, level, span2d<precision>(degree_ + 1, fm::ipow2(level), moment0.data()));
+    hier.reconstruct1d(1, level, span2d<precision>(degree_ + 1, fm::ipow2(level), moment0.data()));
 
-  poisson_solver->solve_periodic(moment0, matrices.edata.electric_field);
+    poisson.solve_periodic(moment0, matrices.edata.electric_field);
 
-  if (matrices.edata.electric_field_infnrm)
-  {
-    precision emax = 0;
-    for (auto e : matrices.edata.electric_field)
-      emax = std::max(emax, std::abs(e));
-    matrices.edata.electric_field_infnrm = emax;
+    if (matrices.edata.electric_field_infnrm)
+    {
+      precision emax = 0;
+      for (auto e : matrices.edata.electric_field)
+        emax = std::max(emax, std::abs(e));
+      matrices.edata.electric_field_infnrm = emax;
+    }
+  } else {
+    expect(field.size() == static_cast<size_t>(sgrid.num_indexes() * fm::ipow(degree_ + 1, sgrid.num_dims())));
+
+    std::vector<precision> moment0;
+    moms1d->project_moment(0, sgrid, field, moment0);
+
+    int const level     = sgrid.current_level(0);
+    hier.reconstruct1d(1, level, span2d<precision>(degree_ + 1, fm::ipow2(level), moment0.data()));
+
+    poisson.solve_periodic(moment0, terms.cdata.electric_field);
   }
 }
 

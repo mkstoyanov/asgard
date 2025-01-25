@@ -113,7 +113,7 @@ struct velocity_dims {
  * \ingroup asgard_pde_definition
  * \brief Indicates the left/right end-points of a dimension
  */
-template<typename P>
+template<typename P = default_precision>
 struct domain_range {
   //! left end-point
   P left;
@@ -132,7 +132,7 @@ struct domain_range {
  * on the moments.
  * If such operators are not used, then the split is meaningless.
  */
-template<typename P>
+template<typename P = default_precision>
 class pde_domain
 {
 public:
@@ -143,13 +143,6 @@ public:
     : num_dims_(num_dimensions)
   {
     check_init();
-  }
-  //! create a domain with given range in each dimension
-  pde_domain(std::initializer_list<domain_range<P>> list)
-    : num_dims_(static_cast<int>(list.size()))
-  {
-    check_init();
-    this->set(list);
   }
   //! create a domain with given range in each dimension
   pde_domain(std::vector<domain_range<P>> list)
@@ -239,7 +232,7 @@ public:
   }
 
   //! used for i/o purposes
-  friend class h5writer<P>;
+  friend class h5manager<P>;
 
 private:
   void check_init() {
@@ -302,7 +295,7 @@ private:
  * of the function will be recomputed several times per-time step.
  * The result will be the same but there will be some performance penalty.
  */
-template<typename P>
+template<typename P = default_precision>
 class separable_func
 {
 public:
@@ -311,14 +304,6 @@ public:
   //! easy way to set the ignore time
   static constexpr type_tag_ignore_time set_ignore_time = type_tag_ignore_time{};
 
-  //! set a function non-separable in time or not depending on time
-  separable_func(std::list<svector_func1d<P>> fdomain)
-  {
-    expect(static_cast<int>(fdomain.size()) <= max_num_dimensions);
-    int dims = 0;
-    for (auto ip = fdomain.begin(); ip < fdomain.end(); ip++)
-      source_func_[dims++] = std::move(*ip);
-  }
   //! set a function non-separable in time or not depending on time
   separable_func(std::list<svector_func1d<P>> fdomain, type_tag_ignore_time)
     : ignores_time_(true)
