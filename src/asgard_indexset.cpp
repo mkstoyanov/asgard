@@ -627,6 +627,44 @@ void sparse_grid::remap(int block_size, std::vector<P> &state) const
   state = std::move(snew);
 }
 
+template<typename P>
+void sparse_grid::clear_safety_layer(int block_size, P state[]) const
+{
+  int64_t const num = iset_.num_indexes();
+
+  int const num_dims = iset_.num_dimensions();
+
+#pragma omp parallel for
+  for (int64_t i = 0; i < num; i++)
+  {
+    std::array<int, max_num_dimensions> idx;
+    std::copy_n(iset_[i], num_dims, idx.data());
+
+    bool found = false;
+    for (int d = 0; d < num_dims; d++)
+    {
+      // careful with the zero-th index, this will assume that the zeroth index has children
+      idx[d] *= 2;
+      if (not iset_.missing(idx)) {
+        found = true;
+        break;
+      }
+
+      idx[d] += 1;
+      if (not iset_.missing(idx)) {
+        found = true;
+        break;
+      }
+
+      idx[d] /= 2;
+    }
+
+    if (not found) {
+      std::fill_n(state + i * block_size, block_size, 0);
+    }
+  }
+}
+
 #ifdef ASGARD_USE_GPU
 template<typename P>
 void sparse_grid::remap(int block_size, gpu::vector<P> &state) const
@@ -723,6 +761,9 @@ template indexset sparse_grid::make_level_set<grid_type::mixed>(std::vector<int>
 
 template void sparse_grid::remap<double>(int, std::vector<double> &) const;
 template void sparse_grid::remap<float>(int, std::vector<float> &) const;
+
+template void sparse_grid::clear_safety_layer<double>(int, double[]) const;
+template void sparse_grid::clear_safety_layer<float>(int, float[]) const;
 
 #ifdef ASGARD_USE_GPU
 template void sparse_grid::remap<double>(int, gpu::vector<double> &) const;

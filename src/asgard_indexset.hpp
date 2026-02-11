@@ -586,6 +586,9 @@ public:
   template<typename P>
   void remap(int block_size, std::vector<P> &state) const;
 
+  template<typename P>
+  void clear_safety_layer(int block_size, P state[]) const;
+
   #ifdef ASGARD_USE_GPU
   //! gpu remap, good for single remap, not good for multiple remaps in a row
   template<typename P>

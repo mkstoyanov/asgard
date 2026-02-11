@@ -200,6 +200,7 @@ public:
     #endif
     block_cpu(pdof, grid, conn, perm_low, nodal2hier_,
               P{1}, f, P{0}, t1.data(), work);
+    grid.clear_safety_layer(block_size, t1.data());
     block_cpu(pdof, grid, conn, perm_up, hier2wav_,
               alpha * P{iwav_scale}, t1.data(), beta, vals, work);
   }
@@ -249,9 +250,10 @@ public:
         tmd.interp(time, nodes(grid), nodal, it2);
       }
     }
-    if (plan.uses_hier())
+    if (plan.uses_hier()) {
       nodal2hier(grid, conn, it2.data(), y, work);
-    else
+      grid.clear_safety_layer(block_size, y);
+    } else
       nodal2wav(grid, conn, alpha, it2.data(), beta, y, work, it1);
   }
   /*!
