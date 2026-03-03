@@ -439,6 +439,7 @@ protected:
 private:
   // workspace and workspace matrices
   bool has_terms_ = false;
+  bool interp_clear_safety = false;
   rhs_raw_data<P> raw_rhs;
 
   block_diag_matrix<P> raw_mass;

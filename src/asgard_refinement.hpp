@@ -64,6 +64,9 @@ public:
     return stats.size() * sizeof(istatus) + weights.size() * sizeof(P);
   }
 
+  //! clear refinement layer
+  bool clear_safery_layer = false;
+
 private:
   //! if no-refinement is set, the public method will have an inline if-statement
   void refine_(connection_patterns const &conns, term_manager<P> const &terms,

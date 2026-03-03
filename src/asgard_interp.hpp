@@ -183,7 +183,8 @@ public:
   //! compute nodal values for the field
   void nodal2wav(sparse_grid const &grid, connection_patterns const &conn,
                  P alpha, P const f[], P beta, P vals[],
-                 kronmult::workspace<P> &work, std::vector<P> &t1) const
+                 kronmult::workspace<P> &work, std::vector<P> &t1,
+                 bool clear_safety = false) const
   {
     #ifdef ASGARD_USE_FLOPCOUNTER
     int constexpr id = 3;
@@ -200,7 +201,8 @@ public:
     #endif
     block_cpu(pdof, grid, conn, perm_low, nodal2hier_,
               P{1}, f, P{0}, t1.data(), work);
-    grid.clear_safety_layer(block_size, t1.data());
+    if (clear_safety)
+      grid.clear_safety_layer(block_size, t1.data());
     block_cpu(pdof, grid, conn, perm_up, hier2wav_,
               alpha * P{iwav_scale}, t1.data(), beta, vals, work);
   }
@@ -230,7 +232,7 @@ public:
       (interpolation_plan const &plan, sparse_grid const &grid,
        connection_patterns const &conn, momentset<P> const &moments,
        P time, P const state[], P alpha, tmd_type const &tmd, P beta, P y[],
-       kronmult::workspace<P> &work) const
+       kronmult::workspace<P> &work, bool clear_safety = false) const
   {
     expect(plan.is_enabled());
     std::vector<P> const &nodal = [&]() -> std::vector<P> const &
@@ -252,9 +254,10 @@ public:
     }
     if (plan.uses_hier()) {
       nodal2hier(grid, conn, it2.data(), y, work);
-      grid.clear_safety_layer(block_size, y);
+      if (clear_safety)
+        grid.clear_safety_layer(block_size, y);
     } else
-      nodal2wav(grid, conn, alpha, it2.data(), beta, y, work, it1);
+      nodal2wav(grid, conn, alpha, it2.data(), beta, y, work, it1, clear_safety);
   }
   /*!
    * \brief Performs the interpolation of the function func
@@ -272,30 +275,13 @@ public:
   void operator ()
       (sparse_grid const &grid, connection_patterns const &conn, momentset<P> const &moments,
        P time, P alpha, tmd_type const &func, P beta, P y[],
-       kronmult::workspace<P> &work) const
+       kronmult::workspace<P> &work, bool clear_safety = false) const
   {
     {
       tools::time_event perf_("source func");
       func(time, nodes(grid), moments, it1);
     }
-    nodal2wav(grid, conn, alpha, it1.data(), beta, y, work, it2);
-  }
-  /*!
-   * \brief Performs the interpolation of the function func
-   *
-   * Vector variant
-   */
-  template<typename tmd_type>
-  void operator ()
-      (sparse_grid const &grid, connection_patterns const &conn, momentset<P> const &moments,
-       P time, P alpha, tmd_type const &func, P beta, std::vector<P> &y,
-       kronmult::workspace<P> &work) const
-  {
-    if (beta == 0)
-      y.resize(it1.size());
-    else
-      expect(y.size() == it1.size());
-    (*this)(grid, conn, moments, time, alpha, func, beta, y.data(), work);
+    nodal2wav(grid, conn, alpha, it1.data(), beta, y, work, it2, clear_safety);
   }
 
   //! indicates whether the manager has been initialized

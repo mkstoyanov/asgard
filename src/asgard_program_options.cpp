@@ -118,6 +118,11 @@ Options          Short   Value      Description
 -noadapt         -noa    -          Ignore any previously set adapt options, can be used
                                     to override adaptivity set in an input file or restart file.
 
+-clearsafety     -csl               EXPERIMENTAL FEATURE
+                                    ignores on layer of the hierarchy when using interpolation
+                                    terms and sources, this reduces some of the oscillations
+                                    introduced by interpolation and leads to smaller problems
+
 <<< time stepping options >>>
 -step-method     -s      string     accepts:
                                       steady
@@ -181,6 +186,7 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv, handle
       {"-adapt-abs", optentry::adapt_threshold},  {"-aa", optentry::adapt_threshold},
       {"-adapt-rel", optentry::adapt_relative},  {"-ar", optentry::adapt_relative},
       {"-noadapt", optentry::no_adapt},  {"-noa", optentry::no_adapt},
+      {"-clearsafety", optentry::clear_safety},  {"-csl", optentry::clear_safety},
       {"-start-levels", optentry::start_levels}, {"-l", optentry::start_levels},
       {"-max-levels", optentry::max_levels}, {"-m", optentry::max_levels},
       {"-degree", optentry::degree}, {"-d", optentry::degree},
@@ -431,6 +437,9 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv, handle
       adapt_relative.reset();
       // needed to cancel adaptivity from a restart file
       set_no_adapt = true;
+    break;
+    case optentry::clear_safety:
+      clear_safety_layer = true;
     break;
     case optentry::solver: {
       // with only a handful of solvers we don't need to use a map here

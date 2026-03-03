@@ -191,19 +191,21 @@ void term_manager<P>::apply_sources(
       if (not src or not resources.owns(src.rec)) continue;
 
       if constexpr (dmode == data_mode::increment or dmode == data_mode::replace)
-        interp(grid, conns, moms.get_cached_interps(), time, 1, src, 1, y, kwork);
+        interp(grid, conns, moms.get_cached_interps(), time, 1, src, 1, y, kwork,
+               interp_clear_safety);
       else
-        interp(grid, conns, moms.get_cached_interps(), time, alpha, src, 1, y, kwork);
+        interp(grid, conns, moms.get_cached_interps(), time, alpha, src, 1, y, kwork,
+               interp_clear_safety);
     }
   } else {
     if (resources.owns(sources_md[group()].rec) and !!sources_md[group()])
     {
       if constexpr (dmode == data_mode::increment or dmode == data_mode::replace)
         interp(grid, conns, moms.get_cached_interps(), time, 1, sources_md[group()],
-               1, y, kwork);
+               1, y, kwork, interp_clear_safety);
       else
         interp(grid, conns, moms.get_cached_interps(), time, alpha, sources_md[group()],
-               1, y, kwork);
+               1, y, kwork, interp_clear_safety);
     }
   }
 

@@ -22,6 +22,8 @@ refinement_manager<P>::refinement_manager(prog_opts const &options, pde_scheme<P
       iplan.enable();
       iplan.stop_hier();
     }
+
+    clear_safery_layer = options.clear_safety_layer;
   }
 }
 
@@ -103,7 +105,7 @@ void refinement_manager<P>::refine_(
     if (not iweights_.is_moment()) {
       iplan.use_moments(false);
       terms.interp(iplan, grid, conns, terms.moms.get_cached_interps(), 0, state.data(),
-                   1, iweights_, 0, terms.t1.data(), terms.kwork);
+                   1, iweights_, 0, terms.t1.data(), terms.kwork, clear_safery_layer);
       update_stats(terms.t1);
     }
 
@@ -111,7 +113,7 @@ void refinement_manager<P>::refine_(
       terms.moms.compute_interps(moments_, grid, state, terms.interp, terms.kwork);
       iplan.use_moments(true);
       terms.interp(iplan, grid, conns, terms.moms.get_cached_interps(), 0, state.data(),
-                   1, iweights_, 0, terms.t1.data(), terms.kwork);
+                   1, iweights_, 0, terms.t1.data(), terms.kwork, clear_safery_layer);
       update_stats(terms.t1);
     }
   }

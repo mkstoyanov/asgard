@@ -344,6 +344,9 @@ void discretization_manager<precision>::set_initial_condition()
   }
   #endif
 
+  bool const csl_save = refinement.clear_safery_layer;
+  refinement.clear_safery_layer = false; // never clear for the initial conditions
+
   bool keep_refining = true;
 
   constexpr precision time = 0;
@@ -361,7 +364,7 @@ void discretization_manager<precision>::set_initial_condition()
                        momentset<precision> const &, std::vector<precision> &vals)
                        -> void {
                          initial_md_(t, x, vals);
-                   }, 0, state, terms.kwork);
+                   }, 0, state.data(), terms.kwork);
     else
       std::fill(state.begin(), state.end(), precision{0});
 
@@ -403,6 +406,8 @@ void discretization_manager<precision>::set_initial_condition()
   }
 
   this->grid_sync();
+
+  refinement.clear_safery_layer = csl_save;
 }
 
 template<typename precision> void

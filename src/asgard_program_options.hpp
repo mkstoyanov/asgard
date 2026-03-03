@@ -626,6 +626,9 @@ struct prog_opts
   //! on each time-step, rejects the step if it contains inf or nan
   bool safe_step = false;
 
+  //! experimental feature, clears the safety layer on interpolation terms and sources
+  bool clear_safety_layer = false;
+
   #ifdef ASGARD_USE_MPI
   //! MPI communicator to be used, it defaults to MPI_COMM_WORLD
   MPI_Comm mpicomm = MPI_COMM_WORLD;
@@ -663,6 +666,7 @@ private:
     adapt_threshold,
     adapt_relative,
     no_adapt,
+    clear_safety,
     start_levels,
     max_levels,
     degree,

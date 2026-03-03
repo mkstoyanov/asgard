@@ -66,6 +66,7 @@ term_manager<P>::term_manager(prog_opts const &options, pde_domain<P> const &dom
 #ifdef ASGARD_USE_MPI
     , resources(options.mpicomm)
 #endif
+    , interp_clear_safety(options.clear_safety_layer)
 {
   if (num_dims == 0)
     return;

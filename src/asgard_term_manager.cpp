@@ -62,7 +62,7 @@ void term_manager<P>::apply_tmpl(
     -> void {
       if (tme.is_interpolatory()) {
         interp(tme.interplan, grid, conns, moms.get_cached_interps(), 0, in,
-               al, tme.tmd, be, out, kwork);
+               al, tme.tmd, be, out, kwork, interp_clear_safety);
       } else {
         block_cpu(basis.pdof, grid, conns, tme.perm, tme.coeffs,
                   al, in, be, out, kwork);
