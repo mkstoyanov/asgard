@@ -111,6 +111,8 @@ struct source_entry_interp
   operator bool () const { return not std::holds_alternative<std::monostate>(func); }
   //! interpolatory function for the source entry
   md_source_func<P> func;
+  //! indicates whether to use hybrid source interpolation
+  bool hybrid_interp = false;
 };
 
 /*!
