@@ -1881,7 +1881,7 @@ public:
               "mismatch between the velocity dimensions for the domain and "
               "the dimensions of the moment");
     }
-    
+
     moment_id const id = mlist.get_add_id(mom);
     if (current_term_group >= 0)
       mom_groups[current_term_group].get_add_id(mom);
@@ -1930,23 +1930,55 @@ public:
   imex_explicit_group imex_ex() const { return ex_; }
 
   //! set an interpolation function for adaptivity
-  void set_adapt_weight(md_func_f<P> func) {
+  void set_adapt_weight(md_func_f<P> func, bool hybrid_interp = false) {
     has_interp_funcs = true;
     rassert(std::holds_alternative<std::monostate>(ref_interp_),
             "set_adapt_weight() already called, cannot set two different adapt weights");
+    if (hybrid_interp)
+      check_hybrid_interp_domain();
     ref_interp_ = std::move(func);
+    ref_hybrid_ = hybrid_interp;
   }
   //! set an interpolation function for adaptivity
-  void set_adapt_weight(md_gpu_func_f<P> func) {
+  void set_adapt_weight(md_gpu_func_f<P> func, bool hybrid_interp = false) {
     static_assert(has_gpu_enabled<pde_scheme<P>>,
                   "using a GPU adapt weight requires a GPU backend enabled with eithe CUDA or ROCM");
+    rassert(not hybrid_interp, "hybrid adapt-weight interpolation is not implemented for GPU functions");
     has_interp_funcs = true;
     rassert(std::holds_alternative<std::monostate>(ref_interp_),
             "set_adapt_weight() already called, cannot set two different adapt weights");
     ref_interp_ = std::move(func);
+    ref_hybrid_ = false;
   }
   //! set an interpolation function for adaptivity
-  void set_adapt_weight(md_mom_func_f<P> func, std::vector<moment_id> moments) {
+  void set_adapt_weight(md_mom_func_f<P> func, std::vector<moment_id> moments,
+                        bool hybrid_interp = false) {
+    rassert(not moments.empty(), "moment function requires moments");
+    rassert(std::holds_alternative<std::monostate>(ref_interp_),
+            "set_adapt_weight() already called, cannot set two different adapt weights");
+    if (hybrid_interp)
+      check_hybrid_interp_domain();
+    has_interp_funcs = true;
+    ref_interp_  = std::move(func);
+    bool has_electric = false;
+    for (moment_id mid : moments) {
+      moment const mom = mlist[mid];
+      if (mom.is_electric()) {
+        has_electric = true;
+        break;
+      }
+    }
+    if (has_electric)
+      moments.push_back(mlist.get_id(moment::zero(domain_.num_vel())));
+    ref_moments_ = std::move(moments);
+    ref_hybrid_  = hybrid_interp;
+  }
+  //! set an interpolation function for adaptivity
+  void set_adapt_weight(md_gpu_mom_func_f<P> func, std::vector<moment_id> moments,
+                        bool hybrid_interp = false) {
+    static_assert(has_gpu_enabled<pde_scheme<P>>,
+                  "using a GPU adapt weight requires a GPU backend enabled with eithe CUDA or ROCM");
+    rassert(not hybrid_interp, "hybrid adapt-weight interpolation is not implemented for GPU functions");
     rassert(not moments.empty(), "moment function requires moments");
     rassert(std::holds_alternative<std::monostate>(ref_interp_),
             "set_adapt_weight() already called, cannot set two different adapt weights");
@@ -1963,27 +1995,7 @@ public:
     if (has_electric)
       moments.push_back(mlist.get_id(moment::zero(domain_.num_vel())));
     ref_moments_ = std::move(moments);
-  }
-  //! set an interpolation function for adaptivity
-  void set_adapt_weight(md_gpu_mom_func_f<P> func, std::vector<moment_id> moments) {
-    static_assert(has_gpu_enabled<pde_scheme<P>>,
-                  "using a GPU adapt weight requires a GPU backend enabled with eithe CUDA or ROCM");
-    rassert(not moments.empty(), "moment function requires moments");
-    rassert(std::holds_alternative<std::monostate>(ref_interp_),
-            "set_adapt_weight() already called, cannot set two different adapt weights");
-    has_interp_funcs = true;
-    ref_interp_  = std::move(func);
-    bool has_electric = false;
-    for (moment_id mid : moments) {
-      moment const mom = mlist[mid];
-      if (mom.is_electric()) {
-        has_electric = true;
-        break;
-      }
-    }
-    if (has_electric)
-      moments.push_back(mlist.get_id(moment::zero(domain_.num_vel())));
-    ref_moments_ = std::move(moments);
+    ref_hybrid_  = hybrid_interp;
   }
 
   //! adds adaptive weight corresponding to the operator
@@ -2065,6 +2077,7 @@ private:
 
   md_field_func<P> ref_interp_;
   std::vector<moment_id> ref_moments_;
+  bool ref_hybrid_ = false;
 };
 
 } // namespace asgard
