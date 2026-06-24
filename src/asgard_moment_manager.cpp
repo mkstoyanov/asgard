@@ -1066,7 +1066,7 @@ void moment_manager<P>::compute_moments(
       assert(work2[g].size() >= num_entries);
       gpu::wrap_array<P> w2(work2[g].data(), num_entries);
 
-      interp.pos2nodal(gpu::device{g}, pos_grid, w1.vec.data(), wav_scale, w2.vec.data(), kwork);
+      interp.pos2nodal(gpu::device{g}, pos_grid, w1.vec.data(), w2.vec.data(), kwork);
 
       moment_expand(pdof, pos_grid.num_dims(), num_vel_, reduce_ij[g], w2.vec, res);
 
@@ -1146,7 +1146,7 @@ void moment_manager<P>::compute_moments(
     assert(work2[0].size() >= num_entries);
     gpu::wrap_array<P> w2(work2[0].data(), num_entries);
 
-    interp.pos2nodal(gpu::device{0}, pos_grid, w1.vec.data(), wav_scale, w2.vec.data(), kwork);
+    interp.pos2nodal(gpu::device{0}, pos_grid, w1.vec.data(), w2.vec.data(), kwork);
 
     moment_expand(pdof, pos_grid.num_dims(), num_vel_, reduce_ij[0], w2.vec, res);
 
