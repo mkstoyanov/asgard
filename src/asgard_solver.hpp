@@ -218,6 +218,14 @@ struct solver_manager
       case solver_method::direct:
         var = solvers::direct<P>(); // will be initialized later
         break;
+      case solver_method::cg:
+        rassert(options.isolver_tolerance,
+                "missing tolerance for the iterative solver cg");
+        rassert(options.isolver_iterations,
+                "missing number of iterations for the iterative solver cg");
+        var = solvers::cg<P>(options.isolver_tolerance.value(),
+                             options.isolver_iterations.value());
+        break;
       case solver_method::bicgstab:
         rassert(options.isolver_tolerance,
                 "missing tolerance for the iterative solver bicgstab");
@@ -326,12 +334,21 @@ struct solver_manager
       }
     } else { // if (opt == solve_opts::gmres)
       if (prec) {
-        solvers::gmres<P> const &gmres = std::get<solvers::gmres<P>>(var);
-
-        num_apply += gmres.solve(prec, apply_lhs, rhs, x);
+        if (method() == solver_method::cg) {
+          solvers::cg<P> const &cg = std::get<solvers::cg<P>>(var);
+          num_apply += cg.solve(prec, apply_lhs, rhs, x);
+        } else {
+          solvers::gmres<P> const &gmres = std::get<solvers::gmres<P>>(var);
+          num_apply += gmres.solve(prec, apply_lhs, rhs, x);
+        }
       } else {
-        num_apply += std::get<solvers::gmres<P>>(var).solve(
-          [](P *)->void{ /* no preconditioner */ }, apply_lhs, rhs, x);
+        if (method() == solver_method::cg) {
+          num_apply += std::get<solvers::cg<P>>(var).solve(
+            [](P *)->void{ /* no preconditioner */ }, apply_lhs, rhs, x);
+        } else {
+          num_apply += std::get<solvers::gmres<P>>(var).solve(
+            [](P *)->void{ /* no preconditioner */ }, apply_lhs, rhs, x);
+        }
       }
     }
   }
@@ -382,6 +399,7 @@ struct solver_manager
   mutable int64_t num_apply = 0;
   //! holds the actual solver instance
   std::variant<solvers::direct<P>,
+               solvers::cg<P>,
                solvers::bicgstab<P>,
                solvers::gmres<P>,
                solvers::scaled_identity<P>> var;

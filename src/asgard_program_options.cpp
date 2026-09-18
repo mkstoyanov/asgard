@@ -456,6 +456,8 @@ void prog_opts::process_inputs(std::vector<std::string_view> const &argv, handle
         throw std::runtime_error(report_no_value());
       if (*selected == "direct")
         solver = solver_method::direct;
+      else if (*selected == "cg")
+        solver = solver_method::cg;
       else if (*selected == "gmres")
         solver = solver_method::gmres;
       else if (*selected == "bicgstab")

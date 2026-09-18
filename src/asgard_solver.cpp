@@ -393,10 +393,17 @@ void solver_manager<P>::iterate_solve(
     }
   } else { // if (opt == solve_opts::gmres)
     if (prec) {
-      num_apply += std::get<solvers::gmres<P>>(var).solve(prec, apply_lhs, rhs, x);
+      if (method() == solver_method::cg)
+        num_apply += std::get<solvers::cg<P>>(var).solve(prec, apply_lhs, rhs, x);
+      else
+        num_apply += std::get<solvers::gmres<P>>(var).solve(prec, apply_lhs, rhs, x);
     } else {
-      num_apply += std::get<solvers::gmres<P>>(var).solve(
-        [](P *)->void{ /* no preconditioner */ }, apply_lhs, rhs, x);
+      if (method() == solver_method::cg)
+        num_apply += std::get<solvers::cg<P>>(var).solve(
+          [](P *)->void{ /* no preconditioner */ }, apply_lhs, rhs, x);
+      else
+        num_apply += std::get<solvers::gmres<P>>(var).solve(
+          [](P *)->void{ /* no preconditioner */ }, apply_lhs, rhs, x);
     }
   }
 }
@@ -409,6 +416,11 @@ void solver_manager<P>::print_opts(std::ostream &os) const
   switch (method()) {
     case solver_method::direct:
       os << "  direct\n";
+      break;
+    case solver_method::cg:
+      os << "  conjugate-gradient\n";
+      os << "  tolerance:      " << std::get<solvers::cg<P>>(var).tolerance() << '\n';
+      os << "  max iterations: " << std::get<solvers::cg<P>>(var).max_iter() << '\n';
       break;
     case solver_method::bicgstab:
       os << "  bicgstab\n";
