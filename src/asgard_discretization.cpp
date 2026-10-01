@@ -13,7 +13,7 @@ discretization_manager<precision>::discretization_manager(
     : discretization_manager()
 {
   verb = pde.options().verbosity.value_or(verbosity);
-  global_grid = &grid;
+  global_grid = &terms.grid;
 
   #ifdef ASGARD_ALWAYS_SAFE_STEP
   safe_step = true;
@@ -192,7 +192,7 @@ void discretization_manager<precision>::restart_from_file(pde_scheme<precision> 
     };
     terms.moms.set_poisson(terms.max_level, terms.grid, terms.xleft, terms.xright, terms.conn, terms.hier, build_func, options_);
   }
-  
+
   start_moments();
 
   terms.build_matrices();

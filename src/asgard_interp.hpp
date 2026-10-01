@@ -373,7 +373,7 @@ public:
   {
     assert(plan.is_enabled());
 
-    size_t const nentries = static_cast<size_t>(grid.num_indexes()) * block_size;
+    int64_t const nentries = grid.num_dof();
 
     // Must size buffers BEFORE callback writes into them
     it1.assign(nentries, P{0}); // or resize(nentries) if you prefer
@@ -683,8 +683,6 @@ public:
   //! temporary workspace vector
   mutable std::vector<P> it2;
   //! provides access to the wav2nodal matrix
-  block_sparse_matrix<P> const &matrix_wav2nodal() const { return wav2nodal_; }
-  //! provides access to the nodal2hier matrix
   block_sparse_matrix<P> const &matrix_wav2nodal() const { return wav2nodal_; }
   //! provides access to the nodal2hier matrix
   block_sparse_matrix<P> const &matrix_nodal2hier() const { return nodal2hier_; }
