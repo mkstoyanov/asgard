@@ -1623,7 +1623,7 @@ public:
         if (options_.default_degree)
           options_.degree = options_.default_degree.value();
         else
-          throw std::runtime_error("must provide a polynomial degree with -d or default_degree()");
+          throw std::runtime_error("must provide a polynomial degree with -d or default_degree");
       }
 
       // setting step method

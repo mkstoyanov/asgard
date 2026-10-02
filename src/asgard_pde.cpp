@@ -377,13 +377,13 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
 {
   static_assert(std::is_same_v<opmode, source<P>> or std::is_same_v<opmode, term_md<P>>);
 
-  int const dp1 = options_.degree.value()+1;
+  int const pdof = degree() + 1;
 
   rassert(domain_.num_pos() > 0, "cannot set simple_bgk_collisions operator for a pde_domain with no position dimensions");
   rassert(domain_.num_vel() > 0, "cannot set simple_bgk_collisions operator for a pde_domain with no velocity dimensions");
   rassert(domain_.num_pos() <= 3, "cannot set simple_bgk_collisions operator for a pde_domain with more than 3 position dimensions");
   rassert(domain_.num_vel() <= 3, "cannot set simple_bgk_collisions operator for a pde_domain with more than 3 velocity dimensions");
-  rassert(2 <= dp1 and dp1 <= 4, "simple_bgk_collisions only valid on polynomial degrees 1, 2, and 3.");
+  rassert(2 <= pdof and pdof <= 4, "simple_bgk_collisions only valid on polynomial degrees 1, 2, and 3.");
   rassert(bgkc.nu > 0, "the collision frequency has to be positive");
 
   P const nu = static_cast<P>(bgkc.nu);
@@ -394,19 +394,26 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
     *this += asgard::term_md<P>(nuI);
   }
 
-  std::array<std::vector<double>,4>basis_mats_ = asgard::legendre::generate_multi_wavelets(dp1-1); // H0, H1, G0, G1
-  // Convert to type P
-  std::array<std::vector<P>,4>basis_mats;
-  for (std::size_t i = 0; i < 4; ++i)
-  {
-    basis_mats[i].reserve(basis_mats_[i].size());
-    for (double x : basis_mats_[i]) basis_mats[i].push_back(static_cast<P>(x));
-  }
+  std::array<std::vector<P>, 4> basis_mats = [&, this]() -> std::array<std::vector<P>, 4>
+    {
+      if constexpr (is_double<P>) {
+        // in double-precision, just get the output of generate_multi_wavelets()
+        return asgard::legendre::generate_multi_wavelets(degree());
+      } else {
+        // in single-precision, get the double-precision output and convert it
+        std::array<std::vector<double>, 4> basis_mats_ = asgard::legendre::generate_multi_wavelets(degree());
 
+        std::array<std::vector<float>, 4> result;
+        for (size_t i = 0; i < result.size(); i++)
+        {
+          result[i].reserve(basis_mats_[i].size());
+          for (double x : basis_mats_[i]) result[i].push_back(static_cast<P>(x));
+        }
+      }
+    }();
 
-  // auto wavelet_maxwell = [&](
-  auto wavelet_maxwell = [basis_mats](
-      int64_t const v_lev, int64_t const v_pos, int64_t const poly_dp1,
+  auto wavelet_maxwell = [basis_mats, pdof](
+      int64_t const v_lev, int64_t const v_pos,
       P const a, P const b,
       P const u, P const th,
       std::vector<P> &mulin,
@@ -414,10 +421,6 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
     )
   {
       // std::cout << " calling hybrid\n";
-
-    P dv = (v_lev == 0) ? b-a : (b-a)/(1 << (v_lev-1)); // (b-a)/2^(lev-1)
-    // Endpoints of wavelet element
-    P loca = a + v_pos*dv;
 
     if (v_lev == 0)
     {
@@ -432,7 +435,7 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
 
       // Integral of 1/√(2πt)(phi_0,phi_1,phi_2)exp(-(v-u)^2/2t) where
       //   phi_i are the orthonormal Legendre polynomials on each element
-      P jv = std::sqrt(2.0/dv); // inverse root jacobian
+      P jv = std::sqrt(2.0/(b - a)); // inverse root jacobian
       P jv2= jv*jv;
       P L0 = std::sqrt(1.0/2.0)*jv*I0;
       P L1 = std::sqrt(3.0/2.0)*jv*jv2*( -I0*mid + I1 );
@@ -445,13 +448,16 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
 
       // Populate to vals
       mulout[0] = L0;
-      if (poly_dp1 > 1) mulout[1] = L1;
-      if (poly_dp1 > 2) mulout[2] = L2;
-      if (poly_dp1 > 3) mulout[3] = L3;
-
+      if (pdof > 1) mulout[1] = L1;
+      if (pdof > 2) mulout[2] = L2;
+      if (pdof > 3) mulout[3] = L3;
     }
     else
     {
+      P const dv = (b-a)/(1 << (v_lev-1)); // (b-a)/2^(lev-1)
+      // Endpoints of wavelet element
+      P const loca = a + v_pos*dv;
+
       // For v_lev > 0 wavlets are piecewise polynomials
       // Integrate legendre polynomials the map to wavelets
       for (int l=0; l<2; l++)
@@ -494,19 +500,15 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
                                   );
 
         mulin[0] = L0;
-        if (poly_dp1 > 1) mulin[1] = L1;
-        if (poly_dp1 > 2) mulin[2] = L2;
-        if (poly_dp1 > 3) mulin[3] = L3;
+        if (pdof > 1) mulin[1] = L1;
+        if (pdof > 2) mulin[2] = L2;
+        if (pdof > 3) mulin[3] = L3;
 
         // Multiply by G0/G1
         if (l == 0)
-        {
-          asgard::smmat::gemv(poly_dp1,poly_dp1,basis_mats[2].data(),mulin.data(),mulout.data());
-        }
+          asgard::smmat::gemv(pdof, pdof, basis_mats[2].data(), mulin.data(), mulout.data());
         else
-        {
-          asgard::smmat::gemv1(poly_dp1,poly_dp1,basis_mats[3].data(),mulin.data(),mulout.data());
-        }
+          asgard::smmat::gemv1(pdof, pdof, basis_mats[3].data(), mulin.data(), mulout.data());
       }
 
     }
@@ -547,17 +549,17 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       #pragma omp parallel
       {
 
-        std::vector<P> mulout1(dp1,0.0);
-        std::vector<P>  mulin1(dp1,0.0);
+        std::vector<P> mulout1(pdof, 0.0);
+        std::vector<P>  mulin1(pdof, 0.0);
 
         #pragma omp for
         for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/num_dims); i++)
         {
           // Loop over polynomial x dof in element
-          for (int64_t poly_x1 = 0; poly_x1 < dp1; poly_x1++)
+          for (int64_t poly_x1 = 0; poly_x1 < pdof; poly_x1++)
           {
             // Get index starting point of cell in this coordinate for x1,x2
-            int64_t const idx_start = (i*dp1 + poly_x1)*dp1;
+            int64_t const idx_start = (i * pdof + poly_x1) * pdof;
 
             // Get fluid variables that given on points in (x,v).  The v coordinate doesnt matter
             P const n  = m0[idx_start];
@@ -572,12 +574,12 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
             int64_t const v1_pos = (v1_lev == 0) ? 0 : v1_idx - (1 << (v1_lev-1)); // v_idx - 2^(v_lev-1)
 
             // Calculate 1D analytic maxwellian
-            wavelet_maxwell(v1_lev, v1_pos, dp1, domain_left1, domain_right1, u1, t, mulin1, mulout1);
+            wavelet_maxwell(v1_lev, v1_pos, domain_left1, domain_right1, u1, t, mulin1, mulout1);
 
             // Take kroneckor product and store
-            for (int poly_v1 = 0; poly_v1 < dp1; poly_v1++)
+            for (int poly_v1 = 0; poly_v1 < pdof; poly_v1++)
             {
-              vals[idx_start + poly_v1] = nu*n*mulout1[poly_v1];
+              vals[idx_start + poly_v1] = nu * n * mulout1[poly_v1];
             }
           }
         }
@@ -640,20 +642,20 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       #pragma omp parallel
       {
 
-        std::vector<P> mulout1(dp1,0.0);
-        std::vector<P>  mulin1(dp1,0.0);
-        std::vector<P> mulout2(dp1,0.0);
-        std::vector<P>  mulin2(dp1,0.0);
+        std::vector<P> mulout1(pdof, 0.0);
+        std::vector<P>  mulin1(pdof, 0.0);
+        std::vector<P> mulout2(pdof, 0.0);
+        std::vector<P>  mulin2(pdof, 0.0);
 
         #pragma omp for
         for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/num_dims); i++)
         {
           // Loop over polynomial x dof in element
-          for (int64_t poly_x1 = 0; poly_x1 < dp1; poly_x1++)
-            for (int64_t poly_x2 = 0; poly_x2 < dp1; poly_x2++)
+          for (int64_t poly_x1 = 0; poly_x1 < pdof; poly_x1++)
+            for (int64_t poly_x2 = 0; poly_x2 < pdof; poly_x2++)
             {
               // Get index starting point of cell in this coordinate for x1,x2
-              int64_t const idx_start = (i*dp1*dp1 + poly_x1*dp1 + poly_x2)*dp1*dp1;
+              int64_t const idx_start = (i * pdof * pdof + poly_x1 * pdof + poly_x2) * pdof * pdof;
 
               // Get fluid variables that given on points in (x,v).  The v coordinate doesnt matter
               P const n  = m0[idx_start];
@@ -673,14 +675,14 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
               int64_t const v2_pos = (v2_lev == 0) ? 0 : v2_idx - (1 << (v2_lev-1)); // v_idx - 2^(v_lev-1)
 
               // Calculate 1D analytic maxwellian
-              wavelet_maxwell(v1_lev, v1_pos, dp1, domain_left2, domain_right2, u1, t, mulin1, mulout1);
-              wavelet_maxwell(v2_lev, v2_pos, dp1, domain_left3, domain_right3, u2, t, mulin2, mulout2);
+              wavelet_maxwell(v1_lev, v1_pos, domain_left2, domain_right2, u1, t, mulin1, mulout1);
+              wavelet_maxwell(v2_lev, v2_pos, domain_left3, domain_right3, u2, t, mulin2, mulout2);
 
               // Take kroneckor product and store
-              for (int poly_v1 = 0; poly_v1 < dp1; poly_v1++)
-                for (int poly_v2 = 0; poly_v2 < dp1; poly_v2++)
+              for (int poly_v1 = 0; poly_v1 < pdof; poly_v1++)
+                for (int poly_v2 = 0; poly_v2 < pdof; poly_v2++)
                 {
-                  vals[idx_start + poly_v1*dp1 + poly_v2] = nu*n*mulout1[poly_v1]*mulout2[poly_v2];
+                  vals[idx_start + poly_v1 * pdof + poly_v2] = nu * n * mulout1[poly_v1] * mulout2[poly_v2];
                 }
             }
         }
@@ -749,23 +751,23 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       #pragma omp parallel
       {
 
-        std::vector<P> mulout1(dp1,0.0);
-        std::vector<P>  mulin1(dp1,0.0);
-        std::vector<P> mulout2(dp1,0.0);
-        std::vector<P>  mulin2(dp1,0.0);
-        std::vector<P> mulout3(dp1,0.0);
-        std::vector<P>  mulin3(dp1,0.0);
+        std::vector<P> mulout1(pdof, 0.0);
+        std::vector<P>  mulin1(pdof, 0.0);
+        std::vector<P> mulout2(pdof, 0.0);
+        std::vector<P>  mulin2(pdof, 0.0);
+        std::vector<P> mulout3(pdof, 0.0);
+        std::vector<P>  mulin3(pdof, 0.0);
 
         #pragma omp for
         for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/num_dims); i++)
         {
           // Loop over polynomial x dof in element
-          for (int64_t poly_x1 = 0; poly_x1 < dp1; poly_x1++)
-            for (int64_t poly_x2 = 0; poly_x2 < dp1; poly_x2++)
-              for (int64_t poly_x3 = 0; poly_x3 < dp1; poly_x3++)
+          for (int64_t poly_x1 = 0; poly_x1 < pdof; poly_x1++)
+            for (int64_t poly_x2 = 0; poly_x2 < pdof; poly_x2++)
+              for (int64_t poly_x3 = 0; poly_x3 < pdof; poly_x3++)
               {
                 // Get index starting point of cell in this coordinate for x1,x2
-                int64_t const idx_start = (i*dp1*dp1*dp1 + poly_x1*dp1*dp1 + poly_x2*dp1 + poly_x3)*dp1*dp1*dp1;
+                int64_t const idx_start = (i * pdof * pdof * pdof + poly_x1 * pdof * pdof + poly_x2 * pdof + poly_x3) * pdof * pdof * pdof;
 
                 // Get fluid variables that given on points in (x,v).  The v coordinate doesnt matter
                 P const n  = m0[idx_start];
@@ -790,16 +792,16 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
                 int64_t const v3_pos = (v3_lev == 0) ? 0 : v3_idx - (1 << (v3_lev-1)); // v_idx - 2^(v_lev-1)
 
                 // Calculate 1D analytic maxwellian
-                wavelet_maxwell(v1_lev, v1_pos, dp1, domain_left3, domain_right3, u1, t, mulin1, mulout1);
-                wavelet_maxwell(v2_lev, v2_pos, dp1, domain_left4, domain_right4, u2, t, mulin2, mulout2);
-                wavelet_maxwell(v3_lev, v3_pos, dp1, domain_left5, domain_right5, u3, t, mulin3, mulout3);
+                wavelet_maxwell(v1_lev, v1_pos, domain_left3, domain_right3, u1, t, mulin1, mulout1);
+                wavelet_maxwell(v2_lev, v2_pos, domain_left4, domain_right4, u2, t, mulin2, mulout2);
+                wavelet_maxwell(v3_lev, v3_pos, domain_left5, domain_right5, u3, t, mulin3, mulout3);
 
                 // Take kroneckor product and store
-                for (int poly_v1 = 0; poly_v1 < dp1; poly_v1++)
-                  for (int poly_v2 = 0; poly_v2 < dp1; poly_v2++)
-                    for (int poly_v3 = 0; poly_v3 < dp1; poly_v3++)
+                for (int poly_v1 = 0; poly_v1 < pdof; poly_v1++)
+                  for (int poly_v2 = 0; poly_v2 < pdof; poly_v2++)
+                    for (int poly_v3 = 0; poly_v3 < pdof; poly_v3++)
                     {
-                      vals[idx_start + poly_v1*dp1*dp1 + poly_v2*dp1 + poly_v3] = nu*n*mulout1[poly_v1]*mulout2[poly_v2]*mulout3[poly_v3];
+                      vals[idx_start + poly_v1 * pdof * pdof + poly_v2 * pdof + poly_v3] = nu * n * mulout1[poly_v1] * mulout2[poly_v2] * mulout3[poly_v3];
                     }
               }
         }
