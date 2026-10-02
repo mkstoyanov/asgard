@@ -430,8 +430,8 @@ set(asgard_components
     test_pdes
     time_advance
     time_data
-    transformations
     tools
+    transformations
     wavelet_basis
 )
 

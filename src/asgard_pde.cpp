@@ -396,8 +396,8 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
 
   std::array<std::vector<double>,4>basis_mats_ = asgard::legendre::generate_multi_wavelets(dp1-1); // H0, H1, G0, G1
   // Convert to type P
-  std::array<std::vector<P>,4>basis_mats; 
-  for (std::size_t i = 0; i < 4; ++i) 
+  std::array<std::vector<P>,4>basis_mats;
+  for (std::size_t i = 0; i < 4; ++i)
   {
     basis_mats[i].reserve(basis_mats_[i].size());
     for (double x : basis_mats_[i]) basis_mats[i].push_back(static_cast<P>(x));
@@ -428,15 +428,15 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       P I2 = th + u*u;
       P I3 = 3.0*u*th + u*u*u;
 
-      // Integral of 1/√(2πt)(phi_0,phi_1,phi_2)exp(-(v-u)^2/2t) where 
+      // Integral of 1/√(2πt)(phi_0,phi_1,phi_2)exp(-(v-u)^2/2t) where
       //   phi_i are the orthonormal Legendre polynomials on each element
       P jv = std::sqrt(2.0/dv); // inverse root jacobian
       P jv2= jv*jv;
-      P L0 = std::sqrt(1.0/2.0)*jv*I0; 
+      P L0 = std::sqrt(1.0/2.0)*jv*I0;
       P L1 = std::sqrt(3.0/2.0)*jv*jv2*( -I0*mid + I1 );
       P L2 = std::sqrt(5.0/8.0)*jv*( (3.0*jv2*jv2*mid*mid-1.0)*I0 - 6.0*jv2*jv2*mid*I1 + 3.0*jv2*jv2*I2);
-      P L3 = std::sqrt(7.0/8.0)*jv*(  (3.0*jv2*mid - 5.0*jv2*jv2*jv2*mid*mid*mid)*I0 
-                                  + (15.0*jv2*jv2*jv2*mid*mid - 3.0*jv2)*I1 
+      P L3 = std::sqrt(7.0/8.0)*jv*(  (3.0*jv2*mid - 5.0*jv2*jv2*jv2*mid*mid*mid)*I0
+                                  + (15.0*jv2*jv2*jv2*mid*mid - 3.0*jv2)*I1
                                   -  15.0*jv2*jv2*jv2*mid*I2
                                   +  5.0*jv2*jv2*jv2*I3
                                   );
@@ -448,11 +448,11 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       if (poly_dp1 > 3) mulout[3] = L3;
 
     }
-    else 
+    else
     {
       // For v_lev > 0 wavlets are piecewise polynomials
       // Integrate legendre polynomials the map to wavelets
-      for (int l=0; l<2; l++) 
+      for (int l=0; l<2; l++)
       {
         P left  = loca + l*dv/2;
         P right = loca + (l+1)*dv/2;
@@ -478,15 +478,15 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
         P I2 =   u*u*C0 +   2.0*u*std::sqrt(th)*C1 +       th*C2;
         P I3 = u*u*u*C0 + 3.0*u*u*std::sqrt(th)*C1 + 3.0*u*th*C2 + std::sqrt(th)*th*C3;
 
-        // Integral of 1/√(2πt)(phi_0,phi_1,phi_2)exp(-(v-u)^2/2t) where 
+        // Integral of 1/√(2πt)(phi_0,phi_1,phi_2)exp(-(v-u)^2/2t) where
         //   phi_i are the orthonormal Legendre polynomials on each element
         P jv = std::sqrt(4.0/dv); // inverse root jacobian
         P jv2= jv*jv;
-        P L0 = std::sqrt(1.0/2.0)*jv*I0; 
+        P L0 = std::sqrt(1.0/2.0)*jv*I0;
         P L1 = std::sqrt(3.0/2.0)*jv*jv*jv*( -I0*mid + I1 );
         P L2 = std::sqrt(5.0/8.0)*jv*( (3.0*jv*jv*jv*jv*mid*mid-1.0)*I0 - 6.0*jv*jv*jv*jv*mid*I1 + 3.0*jv*jv*jv*jv*I2);
-        P L3 = std::sqrt(7.0/8.0)*jv*(  (3.0*jv2*mid - 5.0*jv2*jv2*jv2*mid*mid*mid)*I0 
-                                    + (15.0*jv2*jv2*jv2*mid*mid - 3.0*jv2)*I1 
+        P L3 = std::sqrt(7.0/8.0)*jv*(  (3.0*jv2*mid - 5.0*jv2*jv2*jv2*mid*mid*mid)*I0
+                                    + (15.0*jv2*jv2*jv2*mid*mid - 3.0*jv2)*I1
                                     -  15.0*jv2*jv2*jv2*mid*I2
                                     +   5.0*jv2*jv2*jv2*I3
                                   );
@@ -528,8 +528,13 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       fbgk(num, time, nodes, moments, vals);
     };
     #else
+    P const domain_left1  = domain_.xleft(1);
+    P const domain_right1 = domain_.xright(1);
+
+    int const num_dims = domain_.num_dims();
+
     auto fbgk = [=](P /* time */, asgard::vector2d<P> const &,
-                    asgard::momentset<P> const &moments, 
+                    asgard::momentset<P> const &moments,
                     std::vector<int> const &indexes,
                     std::vector<P> &vals)
     {
@@ -544,7 +549,7 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
         std::vector<P>  mulin1(dp1,0.0);
 
         #pragma omp for
-        for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/domain_.num_dims()); i++)
+        for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/num_dims); i++)
         {
           // Loop over polynomial x dof in element
           for (int64_t poly_x1 = 0; poly_x1 < dp1; poly_x1++)
@@ -565,7 +570,7 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
             int64_t const v1_pos = (v1_lev == 0) ? 0 : v1_idx - (1 << (v1_lev-1)); // v_idx - 2^(v_lev-1)
 
             // Calculate 1D analytic maxwellian
-            wavelet_maxwell(v1_lev,v1_pos,dp1,domain_.xleft(1),domain_.xright(1),u1,t,mulin1,mulout1);
+            wavelet_maxwell(v1_lev, v1_pos, dp1, domain_left1, domain_right1, u1, t, mulin1, mulout1);
 
             // Take kroneckor product and store
             for (int poly_v1 = 0; poly_v1 < dp1; poly_v1++)
@@ -612,8 +617,15 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       fbgk(num, time, nodes, moments, vals);
     };
     #else
+    P const domain_left2  = domain_.xleft(2);
+    P const domain_right2 = domain_.xright(2);
+    P const domain_left3  = domain_.xleft(3);
+    P const domain_right3 = domain_.xright(3);
+
+    int const num_dims = domain_.num_dims();
+
     auto fbgk = [=](P /* time */, asgard::vector2d<P> const &,
-                    asgard::momentset<P> const &moments, 
+                    asgard::momentset<P> const &moments,
                     std::vector<int> const &indexes,
                     std::vector<P> &vals)
     {
@@ -632,7 +644,7 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
         std::vector<P>  mulin2(dp1,0.0);
 
         #pragma omp for
-        for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/domain_.num_dims()); i++)
+        for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/num_dims); i++)
         {
           // Loop over polynomial x dof in element
           for (int64_t poly_x1 = 0; poly_x1 < dp1; poly_x1++)
@@ -659,8 +671,8 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
               int64_t const v2_pos = (v2_lev == 0) ? 0 : v2_idx - (1 << (v2_lev-1)); // v_idx - 2^(v_lev-1)
 
               // Calculate 1D analytic maxwellian
-              wavelet_maxwell(v1_lev,v1_pos,dp1,domain_.xleft(2),domain_.xright(2),u1,t,mulin1,mulout1);
-              wavelet_maxwell(v2_lev,v2_pos,dp1,domain_.xleft(3),domain_.xright(3),u2,t,mulin2,mulout2);
+              wavelet_maxwell(v1_lev, v1_pos, dp1, domain_left2, domain_right2, u1, t, mulin1, mulout1);
+              wavelet_maxwell(v2_lev, v2_pos, dp1, domain_left3, domain_right3, u2, t, mulin2, mulout2);
 
               // Take kroneckor product and store
               for (int poly_v1 = 0; poly_v1 < dp1; poly_v1++)
@@ -710,8 +722,17 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       fbgk(num, time, nodes, moments, vals);
     };
     #else
+    P const domain_left3  = domain_.xleft(3);
+    P const domain_right3 = domain_.xright(3);
+    P const domain_left4  = domain_.xleft(4);
+    P const domain_right4 = domain_.xright(4);
+    P const domain_left5  = domain_.xleft(5);
+    P const domain_right5 = domain_.xright(5);
+
+    int const num_dims = domain_.num_dims();
+
     auto fbgk = [=](P /* time */, asgard::vector2d<P> const &,
-                    asgard::momentset<P> const &moments, 
+                    asgard::momentset<P> const &moments,
                     std::vector<int> const &indexes,
                     std::vector<P> &vals)
     {
@@ -734,7 +755,7 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
         std::vector<P>  mulin3(dp1,0.0);
 
         #pragma omp for
-        for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/domain_.num_dims()); i++)
+        for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/num_dims); i++)
         {
           // Loop over polynomial x dof in element
           for (int64_t poly_x1 = 0; poly_x1 < dp1; poly_x1++)
@@ -767,9 +788,9 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
                 int64_t const v3_pos = (v3_lev == 0) ? 0 : v3_idx - (1 << (v3_lev-1)); // v_idx - 2^(v_lev-1)
 
                 // Calculate 1D analytic maxwellian
-                wavelet_maxwell(v1_lev,v1_pos,dp1,domain_.xleft(3),domain_.xright(3),u1,t,mulin1,mulout1);
-                wavelet_maxwell(v2_lev,v2_pos,dp1,domain_.xleft(4),domain_.xright(4),u2,t,mulin2,mulout2);
-                wavelet_maxwell(v3_lev,v3_pos,dp1,domain_.xleft(5),domain_.xright(5),u3,t,mulin3,mulout3);
+                wavelet_maxwell(v1_lev, v1_pos, dp1, domain_left3, domain_right3, u1, t, mulin1, mulout1);
+                wavelet_maxwell(v2_lev, v2_pos, dp1, domain_left4, domain_right4, u2, t, mulin2, mulout2);
+                wavelet_maxwell(v3_lev, v3_pos, dp1, domain_left5, domain_right5, u3, t, mulin3, mulout3);
 
                 // Take kroneckor product and store
                 for (int poly_v1 = 0; poly_v1 < dp1; poly_v1++)
