@@ -383,7 +383,7 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
   rassert(domain_.num_vel() > 0, "cannot set simple_bgk_collisions operator for a pde_domain with no velocity dimensions");
   rassert(domain_.num_pos() <= 3, "cannot set simple_bgk_collisions operator for a pde_domain with more than 3 position dimensions");
   rassert(domain_.num_vel() <= 3, "cannot set simple_bgk_collisions operator for a pde_domain with more than 3 velocity dimensions");
-  rassert((dp1 < 2) || (dp1 > 4), "simple_bgk_collisions only valid on polynomial degrees 1, 2, and 3.");
+  rassert(2 <= dp1 and dp1 <= 4, "simple_bgk_collisions only valid on polynomial degrees 1, 2, and 3.");
   rassert(bgkc.nu > 0, "the collision frequency has to be positive");
 
   P const nu = static_cast<P>(bgkc.nu);
@@ -404,7 +404,8 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
   }
 
 
-  auto wavelet_maxwell = [&](
+  // auto wavelet_maxwell = [&](
+  auto wavelet_maxwell = [basis_mats](
       int64_t const v_lev, int64_t const v_pos, int64_t const poly_dp1,
       P const a, P const b,
       P const u, P const th,
@@ -412,6 +413,7 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       std::vector<P> &mulout
     )
   {
+      // std::cout << " calling hybrid\n";
 
     P dv = (v_lev == 0) ? b-a : (b-a)/(1 << (v_lev-1)); // (b-a)/2^(lev-1)
     // Endpoints of wavelet element
