@@ -388,41 +388,28 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
 
   P const nu = static_cast<P>(bgkc.nu);
 
+  int const num_dims = domain_.num_dims();
+
   if constexpr (std::is_same_v<opmode, term_md<P>>) {
-    std::vector<asgard::term_1d<P>> nuI(domain_.num_dims(), asgard::term_identity{});
-    nuI[0] = asgard::term_volume<P>{nu};
-    *this += asgard::term_md<P>(nuI);
+    std::vector<term_1d<P>> nuI(domain_.num_dims(), term_identity{});
+    nuI[0] = term_volume<P>{nu};
+    *this += term_md<P>(nuI);
   }
 
-  std::array<std::vector<P>, 4> basis_mats = [&, this]() -> std::array<std::vector<P>, 4>
+  // copy the wavelet transformation matrices G0/G1 into a single vector
+  std::vector<P> gbasis = [&, this]() -> std::vector<P>
     {
-      if constexpr (is_double<P>) {
-        // in double-precision, just get the output of generate_multi_wavelets()
-        return asgard::legendre::generate_multi_wavelets(degree());
-      } else {
-        // in single-precision, get the double-precision output and convert it
-        std::array<std::vector<double>, 4> basis_mats_ = asgard::legendre::generate_multi_wavelets(degree());
-
-        std::array<std::vector<float>, 4> result;
-        for (size_t i = 0; i < result.size(); i++)
-        {
-          result[i].reserve(basis_mats_[i].size());
-          for (double x : basis_mats_[i]) result[i].push_back(static_cast<P>(x));
-        }
-      }
+      std::array<std::vector<double>, 4> basis_mats = legendre::generate_multi_wavelets(degree());
+      std::vector<P> result(2 * pdof * pdof);
+      std::copy_n(basis_mats[2].data(), pdof * pdof, result.data());
+      std::copy_n(basis_mats[3].data(), pdof * pdof, result.data() + pdof * pdof);
+      return result;
     }();
 
-  auto wavelet_maxwell = [basis_mats, pdof](
-      int64_t const v_lev, int64_t const v_pos,
-      P const a, P const b,
-      P const u, P const th,
-      std::vector<P> &mulin,
-      std::vector<P> &mulout
-    )
+  auto wavelet_maxwell = [gbasis, pdof](
+      int idx, P const a, P const b, P const u, P const th, P mulin[], P mulout[])
   {
-      // std::cout << " calling hybrid\n";
-
-    if (v_lev == 0)
+    if (idx == 0)
     {
       // Integrate from -infty to infty to preserve collision invariants
       P mid = 0.5*(b+a);
@@ -435,28 +422,29 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
 
       // Integral of 1/√(2πt)(phi_0,phi_1,phi_2)exp(-(v-u)^2/2t) where
       //   phi_i are the orthonormal Legendre polynomials on each element
-      P jv = std::sqrt(2.0/(b - a)); // inverse root jacobian
-      P jv2= jv*jv;
-      P L0 = std::sqrt(1.0/2.0)*jv*I0;
-      P L1 = std::sqrt(3.0/2.0)*jv*jv2*( -I0*mid + I1 );
-      P L2 = std::sqrt(5.0/8.0)*jv*( (3.0*jv2*jv2*mid*mid-1.0)*I0 - 6.0*jv2*jv2*mid*I1 + 3.0*jv2*jv2*I2);
-      P L3 = std::sqrt(7.0/8.0)*jv*(  (3.0*jv2*mid - 5.0*jv2*jv2*jv2*mid*mid*mid)*I0
-                                  + (15.0*jv2*jv2*jv2*mid*mid - 3.0*jv2)*I1
-                                  -  15.0*jv2*jv2*jv2*mid*I2
-                                  +  5.0*jv2*jv2*jv2*I3
-                                  );
+      P jv2 = 2.0 / (b - a);
+      P jv  = std::sqrt(jv2); // inverse root jacobian
 
-      // Populate to vals
-      mulout[0] = L0;
-      if (pdof > 1) mulout[1] = L1;
-      if (pdof > 2) mulout[2] = L2;
-      if (pdof > 3) mulout[3] = L3;
+      mulout[0] = std::sqrt(1.0/2.0)*jv*I0;
+      if (pdof > 1)
+        mulout[1] = std::sqrt(3.0/2.0)*jv*jv2*( -I0*mid + I1 );
+      if (pdof > 2)
+        mulout[2] = std::sqrt(5.0/8.0)*jv*( (3.0*jv2*jv2*mid*mid-1.0)*I0 - 6.0*jv2*jv2*mid*I1 + 3.0*jv2*jv2*I2);
+      if (pdof > 3)
+        mulout[3] = std::sqrt(7.0/8.0)*jv*(  (3.0*jv2*mid - 5.0*jv2*jv2*jv2*mid*mid*mid)*I0
+                                         + (15.0*jv2*jv2*jv2*mid*mid - 3.0*jv2)*I1
+                                         -  15.0*jv2*jv2*jv2*mid*I2
+                                         +  5.0*jv2*jv2*jv2*I3
+                                         );
     }
     else
     {
-      P const dv = (b-a)/(1 << (v_lev-1)); // (b-a)/2^(lev-1)
+      // given idx > 0, this computes 2^( floor( log_2(idx) ) ) using integer bit-wise operations
+      int const num_idx_above = fm::ipow2_log2(idx); // number of points on the level above idx
+
+      P const dv = (b-a) / num_idx_above; // (b-a)/2^(lev-1)
       // Endpoints of wavelet element
-      P const loca = a + v_pos*dv;
+      P const loca = a + (idx - num_idx_above) * dv;
 
       // For v_lev > 0 wavlets are piecewise polynomials
       // Integrate legendre polynomials the map to wavelets
@@ -490,25 +478,23 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
         //   phi_i are the orthonormal Legendre polynomials on each element
         P jv = std::sqrt(4.0/dv); // inverse root jacobian
         P jv2= jv*jv;
-        P L0 = std::sqrt(1.0/2.0)*jv*I0;
-        P L1 = std::sqrt(3.0/2.0)*jv*jv*jv*( -I0*mid + I1 );
-        P L2 = std::sqrt(5.0/8.0)*jv*( (3.0*jv*jv*jv*jv*mid*mid-1.0)*I0 - 6.0*jv*jv*jv*jv*mid*I1 + 3.0*jv*jv*jv*jv*I2);
-        P L3 = std::sqrt(7.0/8.0)*jv*(  (3.0*jv2*mid - 5.0*jv2*jv2*jv2*mid*mid*mid)*I0
-                                    + (15.0*jv2*jv2*jv2*mid*mid - 3.0*jv2)*I1
-                                    -  15.0*jv2*jv2*jv2*mid*I2
-                                    +   5.0*jv2*jv2*jv2*I3
-                                  );
 
-        mulin[0] = L0;
-        if (pdof > 1) mulin[1] = L1;
-        if (pdof > 2) mulin[2] = L2;
-        if (pdof > 3) mulin[3] = L3;
+        mulin[0] = std::sqrt(1.0/2.0)*jv*I0;
+        if (pdof > 1)
+          mulin[1] = std::sqrt(3.0/2.0)*jv*jv*jv*( -I0*mid + I1 );
+        if (pdof > 2)
+          mulin[2] = std::sqrt(5.0/8.0)*jv*( (3.0*jv*jv*jv*jv*mid*mid-1.0)*I0 - 6.0*jv*jv*jv*jv*mid*I1 + 3.0*jv*jv*jv*jv*I2);
+        if (pdof > 3)
+          mulin[3] = std::sqrt(7.0/8.0)*jv*(  (3.0*jv2*mid - 5.0*jv2*jv2*jv2*mid*mid*mid)*I0
+                                          + (15.0*jv2*jv2*jv2*mid*mid - 3.0*jv2)*I1
+                                          -  15.0*jv2*jv2*jv2*mid*I2
+                                          +   5.0*jv2*jv2*jv2*I3
+                                        );
 
-        // Multiply by G0/G1
         if (l == 0)
-          asgard::smmat::gemv(pdof, pdof, basis_mats[2].data(), mulin.data(), mulout.data());
+          asgard::smmat::gemv(pdof, pdof, gbasis.data(), mulin, mulout);
         else
-          asgard::smmat::gemv1(pdof, pdof, basis_mats[3].data(), mulin.data(), mulout.data());
+          asgard::smmat::gemv1(pdof, pdof, gbasis.data() + pdof * pdof, mulin, mulout);
       }
 
     }
@@ -535,8 +521,6 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
     P const domain_left1  = domain_.xleft(1);
     P const domain_right1 = domain_.xright(1);
 
-    int const num_dims = domain_.num_dims();
-
     auto fbgk = [=](P /* time */, asgard::vector2d<P> const &,
                     asgard::momentset<P> const &moments,
                     std::vector<int> const &indexes,
@@ -546,41 +530,37 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       std::vector<P> const &m1 = moments[im1];
       std::vector<P> const &m2 = moments[im2];
 
+      int64_t const num_indexes = static_cast<int64_t>(indexes.size()) / num_dims;
+
       #pragma omp parallel
       {
+        std::vector<P> wspace(2 * pdof, 0.0);
 
-        std::vector<P> mulout1(pdof, 0.0);
-        std::vector<P>  mulin1(pdof, 0.0);
+        P *mulout1 = wspace.data();
+        P *mulin1  = wspace.data() + pdof;
 
         #pragma omp for
-        for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/num_dims); i++)
+        for (int64_t i = 0; i < num_indexes; i++)
         {
+          // Get index starting point of cell
+          int64_t j = i * pdof * pdof;
+
           // Loop over polynomial x dof in element
-          for (int64_t poly_x1 = 0; poly_x1 < pdof; poly_x1++)
+          for (int ix1 = 0; ix1 < pdof; ix1++)
           {
-            // Get index starting point of cell in this coordinate for x1,x2
-            int64_t const idx_start = (i * pdof + poly_x1) * pdof;
-
             // Get fluid variables that given on points in (x,v).  The v coordinate doesnt matter
-            P const n  = m0[idx_start];
-            P const u1 = m1[idx_start] / m0[idx_start];
-            P const t  = m2[idx_start] / m0[idx_start] - u1 * u1;
-
-            // Need v index
-            int64_t const v1_idx = indexes[2*i+1];
-
-            // Get level and position of current index
-            int64_t const v1_lev = int64_t(std::ceil(std::log2(v1_idx+1)));
-            int64_t const v1_pos = (v1_lev == 0) ? 0 : v1_idx - (1 << (v1_lev-1)); // v_idx - 2^(v_lev-1)
+            P const n  = m0[j];
+            P const u1 = m1[j] / m0[j];
+            P const t  = m2[j] / m0[j] - u1 * u1;
 
             // Calculate 1D analytic maxwellian
-            wavelet_maxwell(v1_lev, v1_pos, domain_left1, domain_right1, u1, t, mulin1, mulout1);
+            wavelet_maxwell(indexes[2*i+1], domain_left1, domain_right1, u1, t, mulin1, mulout1);
 
             // Take kroneckor product and store
-            for (int poly_v1 = 0; poly_v1 < pdof; poly_v1++)
-            {
-              vals[idx_start + poly_v1] = nu * n * mulout1[poly_v1];
-            }
+            for (int iv1 = 0; iv1 < pdof; iv1++)
+              vals[j + iv1] = nu * n * mulout1[iv1];
+
+            j += pdof;
           }
         }
       }
@@ -626,8 +606,6 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
     P const domain_left3  = domain_.xleft(3);
     P const domain_right3 = domain_.xright(3);
 
-    int const num_dims = domain_.num_dims();
-
     auto fbgk = [=](P /* time */, asgard::vector2d<P> const &,
                     asgard::momentset<P> const &moments,
                     std::vector<int> const &indexes,
@@ -639,51 +617,45 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       std::vector<P> const &m20 = moments[im20];
       std::vector<P> const &m02 = moments[im02];
 
+      int64_t const num_indexes = static_cast<int64_t>(indexes.size()) / num_dims;
+
       #pragma omp parallel
       {
+        int const pdof2 = pdof * pdof;
 
-        std::vector<P> mulout1(pdof, 0.0);
-        std::vector<P>  mulin1(pdof, 0.0);
-        std::vector<P> mulout2(pdof, 0.0);
-        std::vector<P>  mulin2(pdof, 0.0);
+        std::vector<P> workspace(4 * pdof, 0.0);
+
+        P* mulout1 = workspace.data();
+        P* mulin1  = workspace.data() + pdof;
+        P* mulout2 = workspace.data() + 2 * pdof;
+        P* mulin2  = workspace.data() + 3 * pdof;
 
         #pragma omp for
-        for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/num_dims); i++)
+        for (int64_t i = 0; i < num_indexes; i++)
         {
+          // Get index starting point of cell in this coordinate for x1,x2
+          int64_t j = i * pdof2 * pdof2;
+
           // Loop over polynomial x dof in element
-          for (int64_t poly_x1 = 0; poly_x1 < pdof; poly_x1++)
-            for (int64_t poly_x2 = 0; poly_x2 < pdof; poly_x2++)
+          for (int ix1 = 0; ix1 < pdof; ix1++)
+            for (int ix2 = 0; ix2 < pdof; ix2++)
             {
-              // Get index starting point of cell in this coordinate for x1,x2
-              int64_t const idx_start = (i * pdof * pdof + poly_x1 * pdof + poly_x2) * pdof * pdof;
-
               // Get fluid variables that given on points in (x,v).  The v coordinate doesnt matter
-              P const n  = m0[idx_start];
-              P const u1 = m10[idx_start] / m0[idx_start];
-              P const u2 = m01[idx_start] / m0[idx_start];
-              P const t  =  (1.0/2.0) * ((m20[idx_start] + m02[idx_start]) / m0[idx_start] - u1 * u1 - u2 * u2);
-
-              // Need v index
-              int64_t const v1_idx = indexes[4*i+2];
-              int64_t const v2_idx = indexes[4*i+3];
-
-              // Get level and position of current index
-              int64_t const v1_lev = int64_t(std::ceil(std::log2(v1_idx+1)));
-              int64_t const v1_pos = (v1_lev == 0) ? 0 : v1_idx - (1 << (v1_lev-1)); // v_idx - 2^(v_lev-1)
-
-              int64_t const v2_lev = int64_t(std::ceil(std::log2(v2_idx+1)));
-              int64_t const v2_pos = (v2_lev == 0) ? 0 : v2_idx - (1 << (v2_lev-1)); // v_idx - 2^(v_lev-1)
+              P const n  = m0[j];
+              P const u1 = m10[j] / m0[j];
+              P const u2 = m01[j] / m0[j];
+              P const t  = P{0.5} * ((m20[j] + m02[j]) / m0[j] - u1 * u1 - u2 * u2);
 
               // Calculate 1D analytic maxwellian
-              wavelet_maxwell(v1_lev, v1_pos, domain_left2, domain_right2, u1, t, mulin1, mulout1);
-              wavelet_maxwell(v2_lev, v2_pos, domain_left3, domain_right3, u2, t, mulin2, mulout2);
+              wavelet_maxwell(indexes[4*i+2], domain_left2, domain_right2, u1, t, mulin1, mulout1);
+              wavelet_maxwell(indexes[4*i+3], domain_left3, domain_right3, u2, t, mulin2, mulout2);
 
-              // Take kroneckor product and store
-              for (int poly_v1 = 0; poly_v1 < pdof; poly_v1++)
-                for (int poly_v2 = 0; poly_v2 < pdof; poly_v2++)
-                {
-                  vals[idx_start + poly_v1 * pdof + poly_v2] = nu * n * mulout1[poly_v1] * mulout2[poly_v2];
-                }
+              // Take Kronecker product and store
+              for (int iv1 = 0; iv1 < pdof; iv1++)
+                for (int iv2 = 0; iv2 < pdof; iv2++)
+                  vals[j + iv1 * pdof + iv2] = nu * n * mulout1[iv1] * mulout2[iv2];
+
+              j += pdof2;
             }
         }
       }
@@ -733,8 +705,6 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
     P const domain_left5  = domain_.xleft(5);
     P const domain_right5 = domain_.xright(5);
 
-    int const num_dims = domain_.num_dims();
-
     auto fbgk = [=](P /* time */, asgard::vector2d<P> const &,
                     asgard::momentset<P> const &moments,
                     std::vector<int> const &indexes,
@@ -748,61 +718,51 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
       std::vector<P> const &m020 = moments[im020];
       std::vector<P> const &m002 = moments[im002];
 
+      int64_t const num_indexes = static_cast<int64_t>(indexes.size()) / num_dims;
+
       #pragma omp parallel
       {
+        int const pdof3 = pdof * pdof * pdof;
 
-        std::vector<P> mulout1(pdof, 0.0);
-        std::vector<P>  mulin1(pdof, 0.0);
-        std::vector<P> mulout2(pdof, 0.0);
-        std::vector<P>  mulin2(pdof, 0.0);
-        std::vector<P> mulout3(pdof, 0.0);
-        std::vector<P>  mulin3(pdof, 0.0);
+        std::vector<P> workspace(6 * pdof, 0.0);
+
+        P* mulout1 = workspace.data();
+        P* mulin1  = workspace.data() + pdof;
+        P* mulout2 = workspace.data() + 2 * pdof;
+        P* mulin2  = workspace.data() + 3 * pdof;
+        P* mulout3 = workspace.data() + 4 * pdof;
+        P* mulin3  = workspace.data() + 5 * pdof;
 
         #pragma omp for
-        for (int64_t i = 0; i < static_cast<std::int64_t>(indexes.size()/num_dims); i++)
+        for (int64_t i = 0; i < num_indexes; i++)
         {
+          // Get index starting point of cell
+          int64_t j = i * pdof3 * pdof3;
+
           // Loop over polynomial x dof in element
-          for (int64_t poly_x1 = 0; poly_x1 < pdof; poly_x1++)
-            for (int64_t poly_x2 = 0; poly_x2 < pdof; poly_x2++)
-              for (int64_t poly_x3 = 0; poly_x3 < pdof; poly_x3++)
+          for (int64_t ix1 = 0; ix1 < pdof; ix1++)
+            for (int64_t ix2 = 0; ix2 < pdof; ix2++)
+              for (int64_t ix3 = 0; ix3 < pdof; ix3++)
               {
-                // Get index starting point of cell in this coordinate for x1,x2
-                int64_t const idx_start = (i * pdof * pdof * pdof + poly_x1 * pdof * pdof + poly_x2 * pdof + poly_x3) * pdof * pdof * pdof;
-
                 // Get fluid variables that given on points in (x,v).  The v coordinate doesnt matter
-                P const n  = m0[idx_start];
-                P const u1 = m100[idx_start] / m0[idx_start];
-                P const u2 = m010[idx_start] / m0[idx_start];
-                P const u3 = m001[idx_start] / m0[idx_start];
-                P const t  =  (1.0/3.0) * ((m200[idx_start] + m020[idx_start] + m002[idx_start]) / m0[idx_start] - u1 * u1 - u2 * u2 - u3 * u3);
-
-                // Need v index
-                int64_t const v1_idx = indexes[6*i+3];
-                int64_t const v2_idx = indexes[6*i+4];
-                int64_t const v3_idx = indexes[6*i+5];
-
-                // Get level and position of current index
-                int64_t const v1_lev = int64_t(std::ceil(std::log2(v1_idx+1)));
-                int64_t const v1_pos = (v1_lev == 0) ? 0 : v1_idx - (1 << (v1_lev-1)); // v_idx - 2^(v_lev-1)
-
-                int64_t const v2_lev = int64_t(std::ceil(std::log2(v2_idx+1)));
-                int64_t const v2_pos = (v2_lev == 0) ? 0 : v2_idx - (1 << (v2_lev-1)); // v_idx - 2^(v_lev-1)
-
-                int64_t const v3_lev = int64_t(std::ceil(std::log2(v3_idx+1)));
-                int64_t const v3_pos = (v3_lev == 0) ? 0 : v3_idx - (1 << (v3_lev-1)); // v_idx - 2^(v_lev-1)
+                P const n  = m0[j];
+                P const u1 = m100[j] / m0[j];
+                P const u2 = m010[j] / m0[j];
+                P const u3 = m001[j] / m0[j];
+                P const t  =  (1.0/3.0) * ((m200[j] + m020[j] + m002[j]) / m0[j] - u1 * u1 - u2 * u2 - u3 * u3);
 
                 // Calculate 1D analytic maxwellian
-                wavelet_maxwell(v1_lev, v1_pos, domain_left3, domain_right3, u1, t, mulin1, mulout1);
-                wavelet_maxwell(v2_lev, v2_pos, domain_left4, domain_right4, u2, t, mulin2, mulout2);
-                wavelet_maxwell(v3_lev, v3_pos, domain_left5, domain_right5, u3, t, mulin3, mulout3);
+                wavelet_maxwell(indexes[6*i+3], domain_left3, domain_right3, u1, t, mulin1, mulout1);
+                wavelet_maxwell(indexes[6*i+4], domain_left4, domain_right4, u2, t, mulin2, mulout2);
+                wavelet_maxwell(indexes[6*i+5], domain_left5, domain_right5, u3, t, mulin3, mulout3);
 
                 // Take kroneckor product and store
-                for (int poly_v1 = 0; poly_v1 < pdof; poly_v1++)
-                  for (int poly_v2 = 0; poly_v2 < pdof; poly_v2++)
-                    for (int poly_v3 = 0; poly_v3 < pdof; poly_v3++)
-                    {
-                      vals[idx_start + poly_v1 * pdof * pdof + poly_v2 * pdof + poly_v3] = nu * n * mulout1[poly_v1] * mulout2[poly_v2] * mulout3[poly_v3];
-                    }
+                for (int iv1 = 0; iv1 < pdof; iv1++)
+                  for (int iv2 = 0; iv2 < pdof; iv2++)
+                    for (int iv3 = 0; iv3 < pdof; iv3++)
+                      vals[j + iv1 * pdof * pdof + iv2 * pdof + iv3] = nu * n * mulout1[iv1] * mulout2[iv2] * mulout3[iv3];
+
+                j += pdof3;
               }
         }
       }
