@@ -476,7 +476,7 @@ void pde_scheme<P>::process(operators::simple_bgk_collisions bgkc)
 
         // Integral of 1/√(2πt)(phi_0,phi_1,phi_2)exp(-(v-u)^2/2t) where
         //   phi_i are the orthonormal Legendre polynomials on each element
-        P jv = std::sqrt(4.0/dv); // inverse root jacobian
+        P jv = std::sqrt(2.0/dv); // inverse root jacobian
         P jv2= jv*jv;
 
         mulin[0] = std::sqrt(1.0/2.0)*jv*I0;
