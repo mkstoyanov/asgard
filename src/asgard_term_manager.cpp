@@ -440,31 +440,235 @@ void term_manager<P>::make_jacobi(group_id gid, std::vector<P> &y) const
       continue;
     }
 
-    if (it->num_chain == 1) {
+    if (it->num_chain == 1 and it->is_separable())
       kron_diag<data_mode::increment>(*it, block_size, y);
+    else
+      kron_non_sep<data_mode::increment>(icurrent, block_size, y);
 
-      icurrent++;
-    } else {
-      // dealing with a chain
-      int const num_chain = it->num_chain;
+//     if (it->num_chain == 1) {
+//       kron_diag<data_mode::increment>(*it, block_size, y);
+//
+//       icurrent++;
+//     } else {
+//       // dealing with a chain
+//       int const num_chain = it->num_chain;
+//
+//       std::fill(kwork.w1.begin(), kwork.w1.end(), P{0});
+//
+//       kron_diag<data_mode::increment>(*(it + num_chain - 1), block_size, kwork.w1);
+//
+//       for (int i = num_chain - 2; i >= 0; --i) {
+//         kron_diag<data_mode::multiply>(*(it + i), block_size, kwork.w1);
+//       }
+//
+//       sanitize(kwork.w1);
+//
+// ASGARD_OMP_PARFOR_SIMD
+//       for (int64_t i = 0; i < num_entries; i++)
+//         y[i] += kwork.w1[i];
 
-      std::fill(kwork.w1.begin(), kwork.w1.end(), P{0});
+    icurrent += it->num_chain;
+  }
+}
 
-      kron_diag<data_mode::increment>(*(it + num_chain - 1), block_size, kwork.w1);
+template<typename P>
+template<data_mode mode>
+void term_manager<P>::kron_non_sep(int current, int const block_size, std::vector<P> &y) const
+{
+  std::cout << " building non-sep or chain\n";
+  static_assert(mode == data_mode::increment or mode == data_mode::multiply);
 
-      for (int i = num_chain - 2; i >= 0; --i) {
-        kron_diag<data_mode::multiply>(*(it + i), block_size, kwork.w1);
-      }
+  int const num_dims = grid.num_dims();
+  std::vector<std::vector<double>> finterp;
 
-      sanitize(kwork.w1);
-
-ASGARD_OMP_PARFOR_SIMD
-      for (int64_t i = 0; i < num_entries; i++)
-        y[i] += kwork.w1[i];
-
-      icurrent += num_chain;
+  // find the number of interpolation terms and the number of gpu functions (if using GPU)
+  int num_interp = 0;
+  #ifdef ASGARD_USE_GPU
+  int num_gpu_funcs = 0;
+  #endif
+  for (int t = 0; t < terms[current].num_chain; t++) {
+    if (not terms[current + t].is_separable()) {
+      num_interp++;
+      #ifdef ASGARD_USE_GPU
+      if (terms[current + t].tmd.uses_gpu_func())
+        num_gpu_funcs++;
+      #endif
     }
   }
+
+  auto call_interp = [&](term_entry<P> const &tme, std::vector<P> const &ones,
+                         #ifdef ASGARD_USE_GPU
+                         gpu::vector<P> const &gpu_ones,
+                         #endif
+                         std::vector<P> &result)
+  {
+    #ifdef ASGARD_USE_GPU
+    if (tme.interplan.uses_gpu_func()) {
+
+      if (tme.interplan.uses_moments()) {
+        tme.tmd.interp(gpu_ones.size(), 0, interp.gpu_nodes(gpu::device{0}, grid),
+                       moms.get_cached_interps(gpu::device{0}),
+                       gpu_ones.data(), interp.gpu_it2[0].data());
+      } else {
+        tme.tmd.interp(gpu_ones.size(), 0, interp.gpu_nodes(gpu::device{0}, grid),
+                       gpu_ones.data(), interp.gpu_it2[0].data());
+      }
+      interp.gpu_it2[0].copy_to_host(result);
+    } else {
+    #endif
+
+      if (tme.interplan.uses_moments()) {
+        tme.tmd.interp(0, interp.nodes(grid), moms.get_cached_interps(), ones, result);
+      } else {
+        tme.tmd.interp(0, interp.nodes(grid), ones, result);
+      }
+
+    #ifdef ASGARD_USE_GPU
+    }
+    #endif
+  };
+
+  if (num_interp > 0) { // prepare a vector of just ones
+    std::fill(interp.it1.begin(), interp.it1.end(), P{1});
+    #ifdef ASGARD_USE_GPU
+    if (num_gpu_funcs > 0) {
+      interp.gpu_it1[0] = interp.it1;
+    }
+    #endif
+  }
+
+  if (num_interp == 1) { // single-interp, use interp.it1
+    for (int t = 0; t < terms[current].num_chain; t++) {
+      if (not terms[current + t].is_separable()) {
+        #ifdef ASGARD_USE_GPU
+        call_interp(terms[current + t], interp.it1, interp.gpu_it1[0], interp.it2);
+        #else
+        call_interp(terms[current + t], interp.it1, interp.it2);
+        #endif
+      }
+    }
+  }
+  else if (num_interp > 1) // need multiple interp vectors
+  {
+    finterp.resize(num_interp);
+    for (auto &vec : finterp) vec.resize(interp.it1.size());
+    auto vec = finterp.begin();
+    for (int t = 0; t < terms[current].num_chain; t++) {
+      if (not terms[current + t].is_separable()) {
+        #ifdef ASGARD_USE_GPU
+        call_interp(terms[current + t], interp.it1, interp.gpu_it1[0], *vec);
+        #else
+        call_interp(terms[current + t], interp.it1, *vec);
+        #endif
+        vec++;
+      }
+    }
+  }
+
+  assert(basis.pdof <= 4);
+  std::array<P, 16> identity_mat;
+  std::fill_n(identity_mat.begin(), basis.pdof * basis.pdof, 0);
+  for (int j = 0; j < basis.pdof; j++)
+    identity_mat[j * basis.pdof + j] = 1;
+
+  auto kron_mat = [&](auto const &coeffs, int const p[], P mat[]) -> void
+  {
+    bool constexpr uses_array = std::is_same_v<std::decay_t<decltype(coeffs)>,
+                                    std::array<block_sparse_matrix<P>, max_num_dimensions>>;
+
+    if (num_dims == 1) {
+      if constexpr (uses_array)
+        std::copy_n(coeffs[0][p[0]], basis.pdof * basis.pdof, mat);
+      else
+        std::copy_n(coeffs[p[0]], basis.pdof * basis.pdof, mat);
+    } else {
+
+      int cyc    = 1;
+      int stride = fm::ipow(basis.pdof, num_dims - 1);
+      int repeat = stride;
+      for (int d : iindexof(num_dims)) {
+        if constexpr (uses_array) {
+          if (coeffs[d].empty())
+            smmat::kron_block(basis.pdof, cyc, stride, repeat, identity_mat.data(), mat);
+          else
+            smmat::kron_block(basis.pdof, cyc, stride, repeat, coeffs[d][conn[coeffs[d]].row_diag(p[d])], mat);
+        } else
+          smmat::kron_block(basis.pdof, cyc, stride, repeat, coeffs[conn[coeffs].row_diag(p[d])], mat);
+
+        stride /= basis.pdof;
+        cyc    *= basis.pdof;
+      }
+    }
+  };
+
+  int const num_indexes = grid.num_indexes();
+  #pragma omp parallel
+  {
+    std::vector<P> A(block_size * block_size);
+    std::vector<P> B(block_size * block_size);
+    std::vector<P> temp(block_size * block_size);
+
+    #pragma omp for
+    for (int i = 0; i < num_indexes; i++)
+    {
+      int ichain = terms[current].num_chain;
+
+      size_t fnum = finterp.size() - 1;
+
+      B.resize(0);
+      while (ichain > 0){
+        ichain--;
+        auto it = terms.begin() + current - ichain;
+
+        if (it->is_separable()) {
+          if (B.empty()) { // first matrix, store in B
+            // std::cout << " is sep, putting in B = " << block_size * block_size << "\n";
+            B.resize(block_size * block_size, P{1});
+            kron_mat(it->coeffs, grid[i], B.data());
+          } else {
+            // std::cout << " is sep, putting in A\n";
+            std::fill(A.begin(), A.end(), P{1});
+            kron_mat(it->coeffs, grid[i], A.data());
+            fm::gemm(block_size, A.data(), B.data(), temp.data());
+            std::swap(B, temp);
+          }
+          // std::cout << " is sep done\n";
+        } else {
+          if (B.empty()) { // first matrix, store in B
+            B.resize(block_size * block_size, P{1});
+            kron_mat(interp.matrix_wav2nodal(), grid[i], B.data());
+          } else {
+            std::fill(A.begin(), A.end(), P{1});
+            kron_mat(interp.matrix_wav2nodal(), grid[i], A.data());
+            fm::gemm(block_size, A.data(), B.data(), temp.data());
+            std::swap(B, temp);
+          }
+          const P *f = (finterp.empty()) ? &interp.it2[i * block_size] : &finterp[fnum][i * block_size];
+          fnum--;
+          ASGARD_PRAGMA_OMP_SIMD(collapse(2))
+          for (int c = 0; c < block_size; c++) {
+            for (int r = 0; r < block_size; r++) {
+              B[c * block_size + r] *= f[r];
+            }
+          }
+          if (not it->interplan.uses_hier()) {
+            std::fill(A.begin(), A.end(), P{1});
+            kron_mat(interp.matrix_hier2wav(), grid[i], A.data());
+            fm::gemm(block_size, A.data(), B.data(), temp.data());
+            std::swap(B, temp);
+          }
+        }
+      }
+
+      for (int t = 0; t < block_size; t++) {
+        if constexpr (mode == data_mode::increment)
+          y[i * block_size + t] += B[t * block_size + t];
+        else if constexpr (mode == data_mode::multiply)
+          y[i * block_size + t] *= B[t * block_size + t];
+      }
+    }
+  }
+  std::cout << " done non-sep\n";
 }
 
 template<typename P>
@@ -474,176 +678,216 @@ void term_manager<P>::kron_diag(
 {
   static_assert(mode == data_mode::increment or mode == data_mode::multiply);
 
-  // type tags
-  struct default_mode{};
-  struct inc_mode{};
-  struct mult_mode{};
+  assert(tme.is_separable());
 
   int const num_dims = grid.num_dims();
 
-  auto form_diag = [&](auto const &coeffs, std::vector<P> &result, auto tag = default_mode{})
-    -> void {
-      bool constexpr def_tag = std::is_same_v<std::decay_t<decltype(tag)>, default_mode>;
-      bool constexpr inc_tag = std::is_same_v<std::decay_t<decltype(tag)>, inc_mode>;
-      bool constexpr mul_tag = std::is_same_v<std::decay_t<decltype(tag)>, mult_mode>;
+  auto const &coeffs = tme.coeffs;
 
-      #pragma omp parallel
-      {
-        std::array<P const *, max_num_dimensions> amats;
+  #pragma omp parallel
+  {
+    std::array<P const *, max_num_dimensions> amats;
 
-        #pragma omp for
-        for (int i = 0; i < grid.num_indexes(); i++) {
-          if constexpr (std::is_same_v<std::decay_t<decltype(coeffs)>,
-                                       std::array<block_sparse_matrix<P>, max_num_dimensions>>)
-          { // multiple matrices case
-            for (int d : iindexof(num_dims))
-              if (coeffs[d].empty())
-                amats[d] = nullptr;
-              else
-                amats[d] = coeffs[d][conn[coeffs[d]].row_diag(grid[i][d])];
+    #pragma omp for
+    for (int i = 0; i < grid.num_indexes(); i++) {
+        for (int d : iindexof(num_dims))
+          if (coeffs[d].empty())
+            amats[d] = nullptr;
+          else
+            amats[d] = coeffs[d][conn[coeffs[d]].row_diag(grid[i][d])];
 
-          } else { // single matrix case
-            for (int d : iindexof(num_dims))
-              amats[d] = coeffs[conn[coeffs].row_diag(grid[i][d])];
-          }
-
-          for (int t : iindexof(block_size)) {
-            P a = 1;
-            int tt = t;
-            for (int d = num_dims - 1; d >= 0; --d)
-            {
-              if (amats[d] != nullptr) {
-                int const rc = tt % basis.pdof;
-                a *= amats[d][rc * basis.pdof + rc];
-              }
-              tt /= basis.pdof;
-            }
-            if constexpr (inc_tag or (def_tag and mode == data_mode::increment))
-              result[i * block_size + t] += a;
-            else if constexpr (mul_tag or (def_tag and mode == data_mode::multiply))
-              result[i * block_size + t] *= a;
-          }
-        }
-      }
-    };
-
-  auto form_diag_mult = [&](auto const &w2n, auto const &n2w, P const f[], std::vector<P> &result)
-    -> void {
-      #pragma omp parallel
-      {
-        std::array<std::array<P, 16>, max_num_dimensions> amats;
-
-        #pragma omp for
-        for (int i = 0; i < grid.num_indexes(); i++)
+      for (int t : iindexof(block_size)) {
+        P a = 1;
+        int tt = t;
+        for (int d = num_dims - 1; d >= 0; --d)
         {
-          P const *fi = f + i * block_size;
-          for (int d : iindexof(num_dims))
-            smmat::gemm(basis.pdof, n2w[conn[n2w].row_diag(grid[i][d])],
-                        w2n[conn[w2n].row_diag(grid[i][d])], amats[d].data());
-
-          for (int t : iindexof(block_size)) {
-            P a = 1;
-            int tt = t;
-            for (int d = num_dims - 1; d >= 0; --d)
-            {
-              int const rc = tt % basis.pdof;
-              a *= amats[d][rc * basis.pdof + rc];
-              tt /= basis.pdof;
-            }
-            if constexpr (mode == data_mode::increment)
-              result[i * block_size + t] += a * fi[t];
-            else if constexpr (mode == data_mode::multiply)
-              result[i * block_size + t] *= a * fi[t];
+          if (amats[d] != nullptr) {
+            int const rc = tt % basis.pdof;
+            a *= amats[d][rc * basis.pdof + rc];
           }
+          tt /= basis.pdof;
         }
+        if constexpr (mode == data_mode::increment)
+          y[i * block_size + t] += a;
+        else if constexpr (mode == data_mode::multiply)
+          y[i * block_size + t] *= a;
       }
-    };
-
-  if (tme.is_separable()) {
-
-    form_diag(tme.coeffs, y, default_mode{});
-
-  } else {
-    // non-separable case
-    int64_t const num_entries = grid.num_dof();
-
-    assert(interp.it1.size() == static_cast<size_t>(num_entries));
-    std::fill(interp.it1.begin(), interp.it1.end(), P{1});
-
-    #ifdef ASGARD_USE_GPU
-    if (tme.interplan.uses_gpu_func()) {
-
-      interp.gpu_it1[0] = interp.it1;
-
-      if (tme.interplan.uses_moments()) {
-        tme.tmd.interp(interp.gpu_it1[0].size(), 0, interp.gpu_nodes(gpu::device{0}, grid),
-                       moms.get_cached_interps(gpu::device{0}),
-                       interp.gpu_it1[0].data(), interp.gpu_it2[0].data());
-      } else {
-        tme.tmd.interp(interp.gpu_it1[0].size(), 0, interp.gpu_nodes(gpu::device{0}, grid),
-                       interp.gpu_it1[0].data(), interp.gpu_it2[0].data());
-      }
-    } else {
-    #endif
-
-      if (tme.interplan.uses_moments()) {
-        tme.tmd.interp(0, interp.nodes(grid), moms.get_cached_interps(), interp.it1, interp.it2);
-      } else {
-        tme.tmd.interp(0, interp.nodes(grid), interp.it1, interp.it2);
-      }
-
-    #ifdef ASGARD_USE_GPU
     }
-    #endif
-
-    form_diag_mult(interp.matrix_wav2nodal(), interp.matrix_hier2wav(), interp.it2.data(), y);
-
-    // if (jac_w2n.empty()) { // cache the wav2nodal operation
-    //   jac_w2n.resize(num_entries, P{0});
-    //   form_diag(interp.matrix_wav2nodal(), jac_w2n, inc_mode{});
-    // }
-    //
-    // if (tme.interplan.uses_hier()) { // stops at hier
-    //   if (jac_n2h.empty()) {
-    //     jac_n2h.resize(num_entries, P{0});
-    //     form_diag(interp.matrix_nodal2hier(), jac_n2h, inc_mode{});
-    //   }
-    //
-    //   ASGARD_OMP_PARFOR_SIMD
-    //   for (int64_t i = 0; i < num_entries; i++) {
-    //     P const val = jac_w2n[i] * interp.it2[i] * jac_n2h[i];
-    //     if constexpr (mode == data_mode::increment) {
-    //       y[i] += val;
-    //     } else if constexpr (mode == data_mode::multiply) {
-    //       y[i] *= val;
-    //     }
-    //   }
-    //
-    // } else {
-    //
-    //   if (jac_n2w.empty()) { // convert back to wav
-    //     // if jac_n2h is set, we can reuse that, otherwise we have to compute
-    //     if (jac_n2h.empty()) {
-    //       jac_n2w.resize(num_entries, P{0});
-    //       form_diag(interp.matrix_nodal2hier(), jac_n2w, inc_mode{});
-    //     } else {
-    //       jac_n2w = jac_n2h; // reuse the first stage of the transition
-    //     }
-    //     form_diag(interp.matrix_hier2wav(), jac_n2w, mult_mode{});
-    //   }
-    //
-    //   ASGARD_OMP_PARFOR_SIMD
-    //   for (int64_t i = 0; i < num_entries; i++) {
-    //     P const val = jac_w2n[i] * interp.it2[i] * jac_n2w[i];
-    //     if constexpr (mode == data_mode::increment) {
-    //       y[i] += val;
-    //     } else if constexpr (mode == data_mode::multiply) {
-    //       y[i] *= val;
-    //     }
-    //   }
-    // }
-
   }
+
+  return;
+
+
+  // type tags
+  // struct default_mode{};
+  // struct inc_mode{};
+  // struct mult_mode{};
+  //
+  // int const num_dims = grid.num_dims();
+  //
+  // auto form_diag = [&](auto const &coeffs, std::vector<P> &result, auto tag = default_mode{})
+  //   -> void {
+  //     bool constexpr def_tag = std::is_same_v<std::decay_t<decltype(tag)>, default_mode>;
+  //     bool constexpr inc_tag = std::is_same_v<std::decay_t<decltype(tag)>, inc_mode>;
+  //     bool constexpr mul_tag = std::is_same_v<std::decay_t<decltype(tag)>, mult_mode>;
+  //
+  //     #pragma omp parallel
+  //     {
+  //       std::array<P const *, max_num_dimensions> amats;
+  //
+  //       #pragma omp for
+  //       for (int i = 0; i < grid.num_indexes(); i++) {
+  //         if constexpr (std::is_same_v<std::decay_t<decltype(coeffs)>,
+  //                                      std::array<block_sparse_matrix<P>, max_num_dimensions>>)
+  //         { // multiple matrices case
+  //           for (int d : iindexof(num_dims))
+  //             if (coeffs[d].empty())
+  //               amats[d] = nullptr;
+  //             else
+  //               amats[d] = coeffs[d][conn[coeffs[d]].row_diag(grid[i][d])];
+  //
+  //         } else { // single matrix case
+  //           for (int d : iindexof(num_dims))
+  //             amats[d] = coeffs[conn[coeffs].row_diag(grid[i][d])];
+  //         }
+  //
+  //         for (int t : iindexof(block_size)) {
+  //           P a = 1;
+  //           int tt = t;
+  //           for (int d = num_dims - 1; d >= 0; --d)
+  //           {
+  //             if (amats[d] != nullptr) {
+  //               int const rc = tt % basis.pdof;
+  //               a *= amats[d][rc * basis.pdof + rc];
+  //             }
+  //             tt /= basis.pdof;
+  //           }
+  //           if constexpr (inc_tag or (def_tag and mode == data_mode::increment))
+  //             result[i * block_size + t] += a;
+  //           else if constexpr (mul_tag or (def_tag and mode == data_mode::multiply))
+  //             result[i * block_size + t] *= a;
+  //         }
+  //       }
+  //     }
+  //   };
+  //
+  // auto form_diag_mult = [&](auto const &w2n, auto const &n2w, P const f[], std::vector<P> &result)
+  //   -> void {
+  //     #pragma omp parallel
+  //     {
+  //       std::array<std::array<P, 16>, max_num_dimensions> amats;
+  //
+  //       #pragma omp for
+  //       for (int i = 0; i < grid.num_indexes(); i++)
+  //       {
+  //         P const *fi = f + i * block_size;
+  //         for (int d : iindexof(num_dims))
+  //           smmat::gemm(basis.pdof, n2w[conn[n2w].row_diag(grid[i][d])],
+  //                       w2n[conn[w2n].row_diag(grid[i][d])], amats[d].data());
+  //
+  //         for (int t : iindexof(block_size)) {
+  //           P a = 1;
+  //           int tt = t;
+  //           for (int d = num_dims - 1; d >= 0; --d)
+  //           {
+  //             int const rc = tt % basis.pdof;
+  //             a *= amats[d][rc * basis.pdof + rc];
+  //             tt /= basis.pdof;
+  //           }
+  //           if constexpr (mode == data_mode::increment)
+  //             result[i * block_size + t] += a * fi[t];
+  //           else if constexpr (mode == data_mode::multiply)
+  //             result[i * block_size + t] *= a * fi[t];
+  //         }
+  //       }
+  //     }
+  //   };
+  //
+  // if (tme.is_separable()) {
+  //
+  //   form_diag(tme.coeffs, y, default_mode{});
+  //
+  // } else {
+  //   // non-separable case
+  //   int64_t const num_entries = grid.num_dof();
+  //
+  //   assert(interp.it1.size() == static_cast<size_t>(num_entries));
+  //   std::fill(interp.it1.begin(), interp.it1.end(), P{1});
+  //
+  //   #ifdef ASGARD_USE_GPU
+  //   if (tme.interplan.uses_gpu_func()) {
+  //
+  //     interp.gpu_it1[0] = interp.it1;
+  //
+  //     if (tme.interplan.uses_moments()) {
+  //       tme.tmd.interp(interp.gpu_it1[0].size(), 0, interp.gpu_nodes(gpu::device{0}, grid),
+  //                      moms.get_cached_interps(gpu::device{0}),
+  //                      interp.gpu_it1[0].data(), interp.gpu_it2[0].data());
+  //     } else {
+  //       tme.tmd.interp(interp.gpu_it1[0].size(), 0, interp.gpu_nodes(gpu::device{0}, grid),
+  //                      interp.gpu_it1[0].data(), interp.gpu_it2[0].data());
+  //     }
+  //   } else {
+  //   #endif
+  //
+  //     if (tme.interplan.uses_moments()) {
+  //       tme.tmd.interp(0, interp.nodes(grid), moms.get_cached_interps(), interp.it1, interp.it2);
+  //     } else {
+  //       tme.tmd.interp(0, interp.nodes(grid), interp.it1, interp.it2);
+  //     }
+  //
+  //   #ifdef ASGARD_USE_GPU
+  //   }
+  //   #endif
+  //
+  //   form_diag_mult(interp.matrix_wav2nodal(), interp.matrix_hier2wav(), interp.it2.data(), y);
+  //
+  //   // if (jac_w2n.empty()) { // cache the wav2nodal operation
+  //   //   jac_w2n.resize(num_entries, P{0});
+  //   //   form_diag(interp.matrix_wav2nodal(), jac_w2n, inc_mode{});
+  //   // }
+  //   //
+  //   // if (tme.interplan.uses_hier()) { // stops at hier
+  //   //   if (jac_n2h.empty()) {
+  //   //     jac_n2h.resize(num_entries, P{0});
+  //   //     form_diag(interp.matrix_nodal2hier(), jac_n2h, inc_mode{});
+  //   //   }
+  //   //
+  //   //   ASGARD_OMP_PARFOR_SIMD
+  //   //   for (int64_t i = 0; i < num_entries; i++) {
+  //   //     P const val = jac_w2n[i] * interp.it2[i] * jac_n2h[i];
+  //   //     if constexpr (mode == data_mode::increment) {
+  //   //       y[i] += val;
+  //   //     } else if constexpr (mode == data_mode::multiply) {
+  //   //       y[i] *= val;
+  //   //     }
+  //   //   }
+  //   //
+  //   // } else {
+  //   //
+  //   //   if (jac_n2w.empty()) { // convert back to wav
+  //   //     // if jac_n2h is set, we can reuse that, otherwise we have to compute
+  //   //     if (jac_n2h.empty()) {
+  //   //       jac_n2w.resize(num_entries, P{0});
+  //   //       form_diag(interp.matrix_nodal2hier(), jac_n2w, inc_mode{});
+  //   //     } else {
+  //   //       jac_n2w = jac_n2h; // reuse the first stage of the transition
+  //   //     }
+  //   //     form_diag(interp.matrix_hier2wav(), jac_n2w, mult_mode{});
+  //   //   }
+  //   //
+  //   //   ASGARD_OMP_PARFOR_SIMD
+  //   //   for (int64_t i = 0; i < num_entries; i++) {
+  //   //     P const val = jac_w2n[i] * interp.it2[i] * jac_n2w[i];
+  //   //     if constexpr (mode == data_mode::increment) {
+  //   //       y[i] += val;
+  //   //     } else if constexpr (mode == data_mode::multiply) {
+  //   //       y[i] *= val;
+  //   //     }
+  //   //   }
+  //   // }
+  //
+  // }
 }
 
 template<typename P>
@@ -689,6 +933,11 @@ template void term_manager<double>::kron_diag<data_mode::increment>(
 template void term_manager<double>::kron_diag<data_mode::multiply>(
     term_entry<double> const &, int const, std::vector<double> &) const;
 
+template void term_manager<double>::kron_non_sep<data_mode::increment>(
+    int, int const, std::vector<double> &) const;
+template void term_manager<double>::kron_non_sep<data_mode::multiply>(
+    int, int const, std::vector<double> &) const;
+
 template void term_manager<double>::apply_tmpl<std::vector<double> const &, std::vector<double> &>(
     group_id, double, std::vector<double> const &, double, std::vector<double> &) const;
 template void term_manager<double>::apply_tmpl<double const[], double[]>(
@@ -714,6 +963,11 @@ template void term_manager<float>::kron_diag<data_mode::increment>(
     term_entry<float> const &, int const, std::vector<float> &) const;
 template void term_manager<float>::kron_diag<data_mode::multiply>(
     term_entry<float> const &, int const, std::vector<float> &) const;
+
+template void term_manager<float>::kron_non_sep<data_mode::increment>(
+    int, int const, std::vector<float> &) const;
+template void term_manager<float>::kron_non_sep<data_mode::multiply>(
+    int, int const, std::vector<float> &) const;
 
 template void term_manager<float>::apply_tmpl<std::vector<float> const &, std::vector<float> &>(
     group_id, float, std::vector<float> const &, float, std::vector<float> &) const;

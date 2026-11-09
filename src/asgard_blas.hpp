@@ -179,6 +179,15 @@ void tpsv(const char uplo, const char trans, const char diag, const int n,
                 cblas_diag_enum(diag), n, A, x, 1);
 }
 
+template<typename P>
+void gemm(int n, P const A[], P const B[], P C[]) {
+  static_assert(is_double<P> or is_float<P>);
+  if constexpr (is_double<P>)
+    cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, n, n, 1, A, n, B, n, 0, C, n);
+  else
+    cblas_fgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, n, n, 1, A, n, B, n, 0, C, n);
+}
+
 } // namespace fm
 
 } // namespace asgard

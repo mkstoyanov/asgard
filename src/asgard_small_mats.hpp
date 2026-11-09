@@ -619,8 +619,11 @@ void kron_block(int n, int cycle, int stride, int repeat, P const A[], P B[])
       {
         ASGARD_PRAGMA_OMP_SIMD(collapse(2))
         for (int r = 0; r < n; r++) // for each row
-          for (int s = 0; s < stride; s++)
+          for (int s = 0; s < stride; s++) {
+            // std::cout << " -- r * stride + s = " << r * stride + s
+            //           << "    c * n + r = " << c * n + r << '\n';
             B[r * stride + s] *= A[c * n + r];
+          }
 
         B += n * stride;
       }

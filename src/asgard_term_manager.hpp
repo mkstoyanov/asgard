@@ -376,6 +376,9 @@ struct term_manager
   //! build the diagonal preconditioner
   template<data_mode mode>
   void kron_diag(term_entry<P> const &tme, int const block_size, std::vector<P> &y) const;
+  //! build the diagonal preconditioner
+  template<data_mode mode>
+  void kron_non_sep(int current, int const block_size, std::vector<P> &y) const;
 
   //! process the source group and store the result into pre-allocated vector
   template<data_mode dmode>
