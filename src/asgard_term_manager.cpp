@@ -469,6 +469,8 @@ void term_manager<P>::make_jacobi(group_id gid, std::vector<P> &y) const
 
     icurrent += it->num_chain;
   }
+
+  tools::dump(100, y.data(), "jac coeff");
 }
 
 template<typename P>
