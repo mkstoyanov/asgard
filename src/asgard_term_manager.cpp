@@ -1,6 +1,7 @@
 #include "asgard_term_manager.hpp"
 
 #include "asgard_blas.hpp"
+#include "asgard_small_mats.hpp"
 
 namespace asgard
 {
@@ -526,6 +527,37 @@ void term_manager<P>::kron_diag(
       }
     };
 
+  auto form_diag_mult = [&](auto const &w2n, auto const &n2w, P const f[], std::vector<P> &result)
+    -> void {
+      #pragma omp parallel
+      {
+        std::array<std::array<P, 16>, max_num_dimensions> amats;
+
+        #pragma omp for
+        for (int i = 0; i < grid.num_indexes(); i++)
+        {
+          P const *fi = f + i * block_size;
+          for (int d : iindexof(num_dims))
+            smmat::gemm(basis.pdof, n2w[conn[n2w].row_diag(grid[i][d])],
+                        w2n[conn[w2n].row_diag(grid[i][d])], amats[d].data());
+
+          for (int t : iindexof(block_size)) {
+            P a = 1;
+            int tt = t;
+            for (int d = num_dims - 1; d >= 0; --d)
+            {
+              int const rc = tt % basis.pdof;
+              a *= amats[d][rc * basis.pdof + rc];
+              tt /= basis.pdof;
+            }
+            if constexpr (mode == data_mode::increment)
+              result[i * block_size + t] += a * fi[t];
+            else if constexpr (mode == data_mode::multiply)
+              result[i * block_size + t] *= a * fi[t];
+          }
+        }
+      }
+    };
 
   if (tme.is_separable()) {
 
@@ -564,50 +596,53 @@ void term_manager<P>::kron_diag(
     }
     #endif
 
-    if (jac_w2n.empty()) { // cache the wav2nodal operation
-      jac_w2n.resize(num_entries, P{0});
-      form_diag(interp.matrix_wav2nodal(), jac_w2n, inc_mode{});
-    }
+    form_diag_mult(interp.matrix_wav2nodal(), interp.matrix_hier2wav(), interp.it2.data(), y);
 
-    if (tme.interplan.uses_hier()) { // stops at hier
-      if (jac_n2h.empty()) {
-        jac_n2h.resize(num_entries, P{0});
-        form_diag(interp.matrix_nodal2hier(), jac_n2h, inc_mode{});
-      }
+    // if (jac_w2n.empty()) { // cache the wav2nodal operation
+    //   jac_w2n.resize(num_entries, P{0});
+    //   form_diag(interp.matrix_wav2nodal(), jac_w2n, inc_mode{});
+    // }
+    //
+    // if (tme.interplan.uses_hier()) { // stops at hier
+    //   if (jac_n2h.empty()) {
+    //     jac_n2h.resize(num_entries, P{0});
+    //     form_diag(interp.matrix_nodal2hier(), jac_n2h, inc_mode{});
+    //   }
+    //
+    //   ASGARD_OMP_PARFOR_SIMD
+    //   for (int64_t i = 0; i < num_entries; i++) {
+    //     P const val = jac_w2n[i] * interp.it2[i] * jac_n2h[i];
+    //     if constexpr (mode == data_mode::increment) {
+    //       y[i] += val;
+    //     } else if constexpr (mode == data_mode::multiply) {
+    //       y[i] *= val;
+    //     }
+    //   }
+    //
+    // } else {
+    //
+    //   if (jac_n2w.empty()) { // convert back to wav
+    //     // if jac_n2h is set, we can reuse that, otherwise we have to compute
+    //     if (jac_n2h.empty()) {
+    //       jac_n2w.resize(num_entries, P{0});
+    //       form_diag(interp.matrix_nodal2hier(), jac_n2w, inc_mode{});
+    //     } else {
+    //       jac_n2w = jac_n2h; // reuse the first stage of the transition
+    //     }
+    //     form_diag(interp.matrix_hier2wav(), jac_n2w, mult_mode{});
+    //   }
+    //
+    //   ASGARD_OMP_PARFOR_SIMD
+    //   for (int64_t i = 0; i < num_entries; i++) {
+    //     P const val = jac_w2n[i] * interp.it2[i] * jac_n2w[i];
+    //     if constexpr (mode == data_mode::increment) {
+    //       y[i] += val;
+    //     } else if constexpr (mode == data_mode::multiply) {
+    //       y[i] *= val;
+    //     }
+    //   }
+    // }
 
-      ASGARD_OMP_PARFOR_SIMD
-      for (int64_t i = 0; i < num_entries; i++) {
-        P const val = jac_w2n[i] * interp.it2[i] * jac_n2h[i];
-        if constexpr (mode == data_mode::increment) {
-          y[i] += val;
-        } else if constexpr (mode == data_mode::multiply) {
-          y[i] *= val;
-        }
-      }
-
-    } else {
-
-      if (jac_n2w.empty()) { // convert back to wav
-        // if jac_n2h is set, we can reuse that, otherwise we have to compute
-        if (jac_n2h.empty()) {
-          jac_n2w.resize(num_entries, P{0});
-          form_diag(interp.matrix_nodal2hier(), jac_n2w, inc_mode{});
-        } else {
-          jac_n2w = jac_n2h; // reuse the first stage of the transition
-        }
-        form_diag(interp.matrix_hier2wav(), jac_n2w, mult_mode{});
-      }
-
-      ASGARD_OMP_PARFOR_SIMD
-      for (int64_t i = 0; i < num_entries; i++) {
-        P const val = jac_w2n[i] * interp.it2[i] * jac_n2w[i];
-        if constexpr (mode == data_mode::increment) {
-          y[i] += val;
-        } else if constexpr (mode == data_mode::multiply) {
-          y[i] *= val;
-        }
-      }
-    }
   }
 }
 

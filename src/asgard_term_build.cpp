@@ -611,6 +611,7 @@ void term_manager<P>::build_const_terms(int const tid, precon_method precon, P a
     // if everything is constant, we can merge
   }
 
+  merging_with_interp = false;
   if (merging_with_interp)
   {
     constexpr bool merge_with_interp = true;
