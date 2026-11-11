@@ -34,12 +34,17 @@ namespace scratch {
           pcurrent = reinterpret_cast<std::byte *>(result) + sizeof(T);
           return result;
         };
-      if (current_size + sizeof(T) + alignof(T) < current_capacity) {
+      size_t const needed = sizeof(T) + alignof(T);
+      if (current_size + needed < current_capacity) {
         return make_pntr_();
       } else {
-        expand_();
-        assert(sizeof(T) + alignof(T) < current_capacity);
-        return make_pntr_();
+        if (needed < current_capacity) {
+          expand_();
+          return make_pntr_();
+        } else {
+          all_data_.push_back(std::vector<std::byte>{needed});
+          return new (all_data_.back().data()) T(the_args...);;
+        }
       }
     }
 
@@ -52,12 +57,40 @@ namespace scratch {
           pcurrent = reinterpret_cast<std::byte *>(result) + sizeof(T) * num;
           return result;
         };
-      if (current_size + sizeof(T) * num + alignof(T) < current_capacity) {
+      size_t const needed = sizeof(T) * num + alignof(T);
+      if (current_size + needed < current_capacity) {
         return make_arr_();
       } else {
-        expand_();
-        assert(sizeof(T) * num + alignof(T) < current_capacity);
+        if (needed < current_capacity) {
+          expand_();
+          return make_arr_();
+        } else {
+          all_data_.push_back(std::vector<std::byte>{needed});
+          return new (all_data_.back().data()) T[num];
+        }
+      }
+    }
+
+    template<typename T>
+    T *make_init_arr(size_t num) {
+      auto make_arr_ = [&]() -> T *
+        {
+          T* result = new (pcurrent) T[num]();
+          current_size = pcurrent - all_data_.back().data();
+          pcurrent = reinterpret_cast<std::byte *>(result) + sizeof(T) * num;
+          return result;
+        };
+      size_t const needed = sizeof(T) * num + alignof(T);
+      if (current_size + needed < current_capacity) {
         return make_arr_();
+      } else {
+        if (needed < current_capacity) {
+          expand_();
+          return make_arr_();
+        } else {
+          all_data_.push_back(std::vector<std::byte>{needed});
+          return new (all_data_.back().data()) T[num];
+        }
       }
     }
 
@@ -100,9 +133,33 @@ namespace scratch {
     return space_->make_arr<T>(num);
   }
 
+  template<typename T>
+  T *make_init_arr(size_t num) {
+    return space_->make_init_arr<T>(num);
+  }
+
   void clear() { space_->clear(); }
 
 }
+
+struct composite
+{
+  composite() {
+    vec = scratch::make_arr<double>(5);
+    vv = scratch::make_arr<float>(2);
+  }
+
+  double x = 0, y = 1;
+  double *vec = nullptr;
+  float *vv = nullptr;
+
+  void print() {
+    std::cout << " composite \n";
+  }
+
+
+};
+
 
 int main(int argc, char **argv)
 {
@@ -131,11 +188,17 @@ int main(int argc, char **argv)
     std::cout << a[i] << "  ";
   std::cout << '\n';
 
+  n = 10;
+  auto b = scratch::make_init_arr<float>(n);
+  for (size_t i = 0; i < n; i++)
+    std::cout << b[i] << "  ";
+  std::cout << '\n';
+
   std::cout << "  ==== NEW FRAME ====\n";
 
   std::vector<double *> vecs;
   for (int s = 0; s < 10; s++)
-    vecs.push_back( scratch::make_arr<double>(120) );
+    vecs.push_back( scratch::make_arr<double>(512) );
 
   scratch::clear();
   vecs.clear();
@@ -156,6 +219,8 @@ int main(int argc, char **argv)
 
   p = vecs.back();
   for (int i = 0; i < 64; i++) p[i] = 1.0;
+
+  auto *vv = scratch::make_arr<composite>(20);
 
   std::cout << "  ==== END ====\n";
 
