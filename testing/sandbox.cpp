@@ -6,6 +6,47 @@ using namespace asgard;
 
 using P = asgard::default_precision;
 
+struct wfoo1 {
+  void foo() { std::cout << "wfoo1\n"; }
+};
+struct wfoo2 {
+  int foo() { std::cout << "wfoo2\n"; return 0; }
+  //void foo() { std::cout << "wfoo2\n"; }
+};
+struct nofoo {
+  void bar() { std::cout << "nofoo\n"; }
+};
+
+template<typename T, typename = void>
+struct has_foo_ : std::false_type {};
+
+template<typename T>
+struct has_foo_<T,
+                std::enable_if_t<
+                    std::is_same_v< decltype(std::declval<T>().foo()), void >
+                    or std::is_same_v< decltype(std::declval<T>().foo()), int >
+                    >> : std::true_type
+{
+  using tt = decltype(std::declval<T>().foo());
+};
+
+template<typename T>
+bool constexpr has_foo = has_foo_<T>::value;
+
+template<typename T>
+void call_foobar(T arg) {
+  if constexpr (has_foo<T>)
+    arg.foo();
+  else
+    arg.bar();
+}
+
+void if_has_method() {
+  call_foobar(wfoo1{});
+  call_foobar(wfoo2{});
+  call_foobar(nofoo{});
+}
+
 namespace scratch {
 
   struct scratch_space {
@@ -166,6 +207,8 @@ int main(int argc, char **argv)
   std::ignore = argc;
   std::ignore = argv;
 
+  if_has_method();
+
   scratch::init();
 
   double *pd = scratch::make_ptr<double>(1);
@@ -221,6 +264,7 @@ int main(int argc, char **argv)
   for (int i = 0; i < 64; i++) p[i] = 1.0;
 
   auto *vv = scratch::make_arr<composite>(20);
+  std::ignore = vv;
 
   std::cout << "  ==== END ====\n";
 
