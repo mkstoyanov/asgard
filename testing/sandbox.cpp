@@ -6,6 +6,50 @@ using namespace asgard;
 
 using P = asgard::default_precision;
 
+template<typename T>
+class own_ptr {
+public:
+    own_ptr() = default;
+    own_ptr(T *p) : data_(p) {}
+
+    ~own_ptr() {
+        if (data_ != nullptr)
+          delete[] data_;
+    }
+
+    own_ptr(own_ptr const &) = delete;
+
+    T& operator[] (size_t i) { return data_[i]; }
+    T const& operator[] (size_t i) const { return data_[i]; }
+
+    operator T * () { return data_; }
+    operator T const * () const { return data_; }
+private:
+    T *data_ = nullptr;
+};
+
+template<typename T>
+class alias_ptr {
+public:
+    alias_ptr() = default;
+    alias_ptr(T *p) : data_(p) {}
+    alias_ptr(own_ptr<T> &own) : data_(own) {}
+
+    T& operator[] (size_t i) { return data_[i]; }
+    T const& operator[] (size_t i) const { return data_[i]; }
+
+    alias_ptr& operator = (own_ptr<T> &own) { data_ = own; }
+
+    operator T * () { return data_; }
+    operator T const * () const { return data_; }
+private:
+    T *data_ = nullptr;
+};
+
+
+
+
+
 struct wfoo1 {
   void foo() { std::cout << "wfoo1\n"; }
 };
@@ -207,7 +251,18 @@ int main(int argc, char **argv)
   std::ignore = argc;
   std::ignore = argv;
 
-  if_has_method();
+  // if_has_method();
+
+  own_ptr<double> o = new double[10];
+
+  o[0] = 10;
+  o[1] = 11;
+
+  alias_ptr<double> l = o;
+
+  std::cout << l[0] << "   " << l[1] << '\n';
+
+  return 0;
 
   scratch::init();
 
